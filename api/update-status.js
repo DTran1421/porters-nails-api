@@ -30,16 +30,29 @@ module.exports = async function handler(req, res) {
     if (!dbRes.ok) throw new Error(`Supabase error: ${dbRes.status}`);
 
     // Email customer if they gave an address
-    if (email) {
+    if (email && (isConfirmed || isCancelled || status === 'declined')) {
       const isConfirmed = status === 'confirmed';
+      const isCancelled = status === 'cancelled';
       await fetch('https://api.resend.com/emails', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           from: "Porter's Nails <bookings@portersnailsandspa.com>",
           to: [email],
-          subject: isConfirmed ? "Your appointment is confirmed! 💅" : "About your appointment request",
-          html: isConfirmed
+          subject: isConfirmed ? "Your appointment is confirmed! 💅" : isCancelled ? "Your appointment has been cancelled" : "About your appointment request",
+          html: isCancelled
+            ? `<div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:24px">
+                <h2 style="color:#9a5a5a">Your appointment has been cancelled</h2>
+                <p style="color:#555;font-size:15px">Hi ${name}, we've had to cancel your appointment at <strong>Porter's Nails and Spa</strong>.</p>
+                <div style="background:#fdf8f5;border:1px solid #f0d0d8;border-radius:12px;padding:18px;margin:20px 0;font-size:15px">
+                  <div style="margin-bottom:8px"><strong>Service:</strong> ${service}</div>
+                  <div style="margin-bottom:8px"><strong>Date:</strong> ${date}</div>
+                  <div><strong>Time:</strong> ${time}</div>
+                </div>
+                <p style="color:#555;font-size:14px">We're sorry for the inconvenience. Please call us at <a href="tel:2817477421" style="color:#B84A6E">(281) 747-7421</a> to reschedule.</p>
+                <p style="color:#aaa;font-size:12px">23830 FM1314 Suite C, Porter, TX 77365</p>
+              </div>`
+            : isConfirmed
             ? `<div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:24px">
                 <h2 style="color:#B84A6E">You're all set, ${name}! 🎉</h2>
                 <p style="color:#555;font-size:15px">Your appointment at <strong>Porter's Nails and Spa</strong> is confirmed.</p>
