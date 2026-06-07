@@ -13,9 +13,17 @@ module.exports = async function handler(req, res) {
   const SUPABASE_SVC_KEY = process.env.SUPABASE_SERVICE_KEY;
   const OWNER_EMAIL      = process.env.OWNER_EMAIL;
 
-  // ── GET: return appointments OR booked slots ──────────────────────────
+  // ── GET: return appointments, booked slots, or nail techs ────────────
   if (req.method === 'GET') {
     try {
+      if (req.query.techs === '1') {
+        // Return nail techs list for the booking wizard
+        const r = await fetch(`${SUPABASE_URL}/rest/v1/nail_techs?order=name.asc`, {
+          headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` }
+        });
+        if (!r.ok) throw new Error(`Supabase ${r.status}`);
+        return res.status(200).json(await r.json());
+      }
       if (req.query.slots === '1') {
         // Return booked time slots for a specific tech + date (for booking wizard)
         const { tech, date } = req.query;
@@ -143,6 +151,43 @@ module.exports = async function handler(req, res) {
           </div>`
         })
       });
+    }
+
+    // ── SMS via Twilio ──────────────────────────────────────────────────
+    const TWILIO_SID   = process.env.TWILIO_SID;
+    const TWILIO_TOKEN = process.env.TWILIO_TOKEN;
+    const TWILIO_FROM  = process.env.TWILIO_FROM;
+
+    const sendSms = async (to, body) => {
+      if (!TWILIO_SID || !TWILIO_TOKEN || !TWILIO_FROM || !to) return;
+      const toNum = '+1' + to.replace(/\D/g,'').slice(-10);
+      await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Messages.json`, {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Basic ' + Buffer.from(`${TWILIO_SID}:${TWILIO_TOKEN}`).toString('base64'),
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: new URLSearchParams({ From: TWILIO_FROM, To: toNum, Body: body }).toString()
+      });
+    };
+
+    // Text the customer
+    if (phone) {
+      await sendSms(phone, `Hi ${name}! We received your appointment request for ${service} on ${date} at ${time}. We'll confirm shortly! Questions? Call (281) 747-7421. - Porter's Nails & Spa`);
+    }
+
+    // Text the assigned tech (if specific tech was selected, not "any available")
+    if (techName && techName !== 'Any available' && techName !== 'To be assigned') {
+      const techRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/nail_techs?name=eq.${encodeURIComponent(techName)}&select=phone`,
+        { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } }
+      );
+      if (techRes.ok) {
+        const techRows = await techRes.json();
+        if (techRows[0]?.phone) {
+          await sendSms(techRows[0].phone, `New booking: ${name} requested ${service} on ${date} at ${time}. Check the dashboard. - Porter's Nails`);
+        }
+      }
     }
 
     return res.status(200).json({ success: true });
