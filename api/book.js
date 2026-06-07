@@ -13,20 +13,35 @@ module.exports = async function handler(req, res) {
   const SUPABASE_SVC_KEY = process.env.SUPABASE_SERVICE_KEY;
   const OWNER_EMAIL      = process.env.OWNER_EMAIL;
 
-  // ── GET: return appointments for the owner dashboard ──────────────────
+  // ── GET: return appointments OR booked slots ──────────────────────────
   if (req.method === 'GET') {
     try {
-      const r = await fetch(`${SUPABASE_URL}/rest/v1/appointments?order=date.asc,time.asc`, {
-        headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` }
-      });
-      if (!r.ok) throw new Error(`Supabase ${r.status}`);
-      const data = await r.json();
-      return res.status(200).json(data);
+      if (req.query.slots === '1') {
+        // Return booked time slots for a specific tech + date (for booking wizard)
+        const { tech, date } = req.query;
+        if (!tech || !date) return res.status(200).json({ booked: [] });
+        const r = await fetch(
+          `${SUPABASE_URL}/rest/v1/appointments?tech_name=eq.${encodeURIComponent(tech)}&date=eq.${date}&status=in.(pending,confirmed)&select=time`,
+          { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } }
+        );
+        if (!r.ok) throw new Error(`Supabase ${r.status}`);
+        const rows = await r.json();
+        return res.status(200).json({ booked: rows.map(a => a.time) });
+      } else {
+        // Return all appointments for the owner dashboard
+        const r = await fetch(`${SUPABASE_URL}/rest/v1/appointments?order=date.asc,time.asc`, {
+          headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` }
+        });
+        if (!r.ok) throw new Error(`Supabase ${r.status}`);
+        const data = await r.json();
+        return res.status(200).json(data);
+      }
     } catch (err) {
       console.error('GET error:', err.message);
       return res.status(500).json({ error: err.message });
     }
   }
+
 
   // ── POST: create a new booking ─────────────────────────────────────────
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
