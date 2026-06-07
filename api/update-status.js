@@ -32,11 +32,49 @@ module.exports = async function handler(req, res) {
     });
     if (!dbRes.ok) throw new Error(`Supabase error: ${dbRes.status}`);
 
+    // ── SMS via Twilio ────────────────────────────────────────────────────
+    const TWILIO_SID   = process.env.TWILIO_SID;
+    const TWILIO_TOKEN = process.env.TWILIO_TOKEN;
+    const TWILIO_FROM  = process.env.TWILIO_FROM;
+
+    const sendSms = async (to, body) => {
+      if (!TWILIO_SID || !TWILIO_TOKEN || !TWILIO_FROM || !to) return;
+      const toNum = '+1' + to.replace(/\D/g,'').slice(-10);
+      await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Messages.json`, {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Basic ' + Buffer.from(`${TWILIO_SID}:${TWILIO_TOKEN}`).toString('base64'),
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: new URLSearchParams({ From: TWILIO_FROM, To: toNum, Body: body }).toString()
+      });
+    };
+
+    const assignedTech = tech_name || null;
+    const isConfirmed  = status === 'confirmed';
+    const isCancelled  = status === 'cancelled';
+
+    // Text the customer
+    if (isConfirmed && id) {
+      await sendSms(null, ''); // placeholder — customer phone not passed here yet
+    }
+
+    // Text the tech when confirmed
+    if (isConfirmed && assignedTech && assignedTech !== 'Any available') {
+      const techRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/nail_techs?name=eq.${encodeURIComponent(assignedTech)}&select=phone`,
+        { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } }
+      );
+      if (techRes.ok) {
+        const techRows = await techRes.json();
+        if (techRows[0]?.phone) {
+          await sendSms(techRows[0].phone, `Your appointment with ${name} for ${service} on ${date} at ${time} is confirmed. - Porter's Nails`);
+        }
+      }
+    }
+
     // Send email to customer if they provided one
     if (email) {
-      const assignedTech = tech_name || null;
-      const isConfirmed = status === 'confirmed';
-      const isCancelled = status === 'cancelled';
 
       let subject, html;
 
