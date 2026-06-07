@@ -19,7 +19,23 @@ module.exports = async function handler(req, res) {
       if (req.query.slots === '1') {
         // Return booked time slots for a specific tech + date (for booking wizard)
         const { tech, date } = req.query;
-        if (!tech || !date) return res.status(200).json({ booked: [] });
+        if (!date) return res.status(200).json({ booked: [], bookedByTech: {} });
+        if (tech === 'any') {
+          // Return booked slots grouped by tech for this date (for "anyone available" mode)
+          const r = await fetch(
+            `${SUPABASE_URL}/rest/v1/appointments?date=eq.${date}&status=in.(pending,confirmed)&select=tech_name,time`,
+            { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } }
+          );
+          if (!r.ok) throw new Error(`Supabase ${r.status}`);
+          const rows = await r.json();
+          const bookedByTech = {};
+          rows.forEach(row => {
+            if (!bookedByTech[row.tech_name]) bookedByTech[row.tech_name] = [];
+            bookedByTech[row.tech_name].push(row.time);
+          });
+          return res.status(200).json({ bookedByTech });
+        }
+        if (!tech) return res.status(200).json({ booked: [] });
         const r = await fetch(
           `${SUPABASE_URL}/rest/v1/appointments?tech_name=eq.${encodeURIComponent(tech)}&date=eq.${date}&status=in.(pending,confirmed)&select=time`,
           { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } }
