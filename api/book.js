@@ -36,13 +36,23 @@ module.exports = async function handler(req, res) {
           return res.status(200).json({ bookedByTech });
         }
         if (!tech) return res.status(200).json({ booked: [] });
-        const r = await fetch(
-          `${SUPABASE_URL}/rest/v1/appointments?tech_name=eq.${encodeURIComponent(tech)}&date=eq.${date}&status=in.(pending,confirmed)&select=time`,
-          { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } }
-        );
-        if (!r.ok) throw new Error(`Supabase ${r.status}`);
-        const rows = await r.json();
-        return res.status(200).json({ booked: rows.map(a => a.time) });
+        // Fetch slots for this specific tech AND any "Any available" bookings on this date
+        // (unassigned bookings could be assigned to any tech, so they block all techs)
+        const [techRes, anyRes] = await Promise.all([
+          fetch(
+            `${SUPABASE_URL}/rest/v1/appointments?tech_name=eq.${encodeURIComponent(tech)}&date=eq.${date}&status=in.(pending,confirmed)&select=time`,
+            { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } }
+          ),
+          fetch(
+            `${SUPABASE_URL}/rest/v1/appointments?tech_name=in.(Any%20available,To%20be%20assigned)&date=eq.${date}&status=in.(pending,confirmed)&select=time`,
+            { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } }
+          )
+        ]);
+        if (!techRes.ok || !anyRes.ok) throw new Error('Supabase query failed');
+        const techRows = await techRes.json();
+        const anyRows  = await anyRes.json();
+        const booked = [...new Set([...techRows.map(a => a.time), ...anyRows.map(a => a.time)])];
+        return res.status(200).json({ booked });
       } else {
         // Return all appointments for the owner dashboard
         const r = await fetch(`${SUPABASE_URL}/rest/v1/appointments?order=date.asc,time.asc`, {
