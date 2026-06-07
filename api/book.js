@@ -37,14 +37,18 @@ module.exports = async function handler(req, res) {
         }
         if (!tech) return res.status(200).json({ booked: [] });
         // Fetch slots for this specific tech AND any "Any available" bookings on this date
-        // (unassigned bookings could be assigned to any tech, so they block all techs)
+        // Exclude the appointment being assigned (it's the one we're processing)
+        const exclude = req.query.exclude || '';
+        const anyFilter = exclude
+          ? `tech_name=in.(Any%20available,To%20be%20assigned)&date=eq.${date}&status=in.(pending,confirmed)&id=neq.${exclude}&select=time`
+          : `tech_name=in.(Any%20available,To%20be%20assigned)&date=eq.${date}&status=in.(pending,confirmed)&select=time`;
         const [techRes, anyRes] = await Promise.all([
           fetch(
             `${SUPABASE_URL}/rest/v1/appointments?tech_name=eq.${encodeURIComponent(tech)}&date=eq.${date}&status=in.(pending,confirmed)&select=time`,
             { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } }
           ),
           fetch(
-            `${SUPABASE_URL}/rest/v1/appointments?tech_name=in.(Any%20available,To%20be%20assigned)&date=eq.${date}&status=in.(pending,confirmed)&select=time`,
+            `${SUPABASE_URL}/rest/v1/appointments?${anyFilter}`,
             { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } }
           )
         ]);
