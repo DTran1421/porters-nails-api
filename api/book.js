@@ -1,23 +1,41 @@
 // Porter's Nails — booking handler
-// Receives a booking from the website, stores it in Supabase, emails the owner + customer.
+// GET  → returns all appointments for the dashboard
+// POST → receives a new booking, stores it, emails owner + customer
 
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') return res.status(200).end();
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-
-  const { name, phone, email, service, category, techName, date, time, notes, priceLabel } = req.body;
-  if (!name || !phone || !service) return res.status(400).json({ error: 'Missing required fields' });
 
   const RESEND_KEY       = process.env.RESEND_KEY;
   const SUPABASE_URL     = process.env.SUPABASE_URL;
   const SUPABASE_SVC_KEY = process.env.SUPABASE_SERVICE_KEY;
   const OWNER_EMAIL      = process.env.OWNER_EMAIL;
 
+  // ── GET: return appointments for the owner dashboard ──────────────────
+  if (req.method === 'GET') {
+    try {
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/appointments?order=date.asc,time.asc`, {
+        headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` }
+      });
+      if (!r.ok) throw new Error(`Supabase ${r.status}`);
+      const data = await r.json();
+      return res.status(200).json(data);
+    } catch (err) {
+      console.error('GET error:', err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
+  // ── POST: create a new booking ─────────────────────────────────────────
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
+  const { name, phone, email, service, category, techName, date, time, notes, priceLabel } = req.body;
+  if (!name || !phone || !service) return res.status(400).json({ error: 'Missing required fields' });
+
   try {
-    // 1 — Store appointment in Supabase
+    // 1 — Store in Supabase
     const dbRes = await fetch(`${SUPABASE_URL}/rest/v1/appointments`, {
       method: 'POST',
       headers: {
@@ -58,7 +76,7 @@ module.exports = async function handler(req, res) {
       })
     });
 
-    // 3 — Confirm to customer (only if they gave an email)
+    // 3 — Confirm to customer
     if (email) {
       await fetch('https://api.resend.com/emails', {
         method: 'POST',
@@ -84,7 +102,7 @@ module.exports = async function handler(req, res) {
 
     return res.status(200).json({ success: true });
   } catch (err) {
-    console.error('Booking error:', err.message);
+    console.error('POST error:', err.message);
     return res.status(500).json({ error: 'Something went wrong. Please call (281) 747-7421.' });
   }
 };
