@@ -32,6 +32,23 @@ module.exports = async function handler(req, res) {
     });
     if (!dbRes.ok) throw new Error(`Supabase error: ${dbRes.status}`);
 
+    // If this is a reschedule approval, cancel the original booking
+    if (status === 'confirmed') {
+      const apptRes = await fetch(`${SUPABASE_URL}/rest/v1/appointments?id=eq.${id}&select=reschedule_of`, {
+        headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` }
+      });
+      if (apptRes.ok) {
+        const apptRows = await apptRes.json();
+        if (apptRows[0]?.reschedule_of) {
+          await fetch(`${SUPABASE_URL}/rest/v1/appointments?id=eq.${apptRows[0].reschedule_of}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}`, 'Prefer': 'return=minimal' },
+            body: JSON.stringify({ status: 'cancelled' })
+          });
+        }
+      }
+    }
+
     // ── SMS via Twilio ────────────────────────────────────────────────────
     const TWILIO_SID   = process.env.TWILIO_SID;
     const TWILIO_TOKEN = process.env.TWILIO_TOKEN;
