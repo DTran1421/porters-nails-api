@@ -8,7 +8,7 @@ module.exports = async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { id, status, name, email, service, date, time, tech_name } = req.body;
+  const { id, status, name, email, phone, service, date, time, tech_name, new_date, new_time, old_date, old_time } = req.body;
   if (!id || !status) return res.status(400).json({ error: 'Missing id or status' });
 
   const RESEND_KEY       = process.env.RESEND_KEY;
@@ -16,6 +16,59 @@ module.exports = async function handler(req, res) {
   const SUPABASE_SVC_KEY = process.env.SUPABASE_SERVICE_KEY;
 
   try {
+    // ── Staff reschedule (owner/tech moves appointment to new date/time) ──
+    if (status === 'rescheduled') {
+      const updateRes = await fetch(`${SUPABASE_URL}/rest/v1/appointments?id=eq.${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}`, 'Prefer': 'return=minimal' },
+        body: JSON.stringify({ date: new_date, time: new_time })
+      });
+      if (!updateRes.ok) throw new Error(`Supabase error: ${updateRes.status}`);
+
+      const TWILIO_SID = process.env.TWILIO_SID, TWILIO_TOKEN = process.env.TWILIO_TOKEN, TWILIO_FROM = process.env.TWILIO_FROM;
+      const sendSms = async (to, body) => {
+        if (!TWILIO_SID || !to) return;
+        const toNum = '+1' + to.replace(/\D/g,'').slice(-10);
+        await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Messages.json`, {
+          method: 'POST',
+          headers: { 'Authorization': 'Basic ' + Buffer.from(`${TWILIO_SID}:${TWILIO_TOKEN}`).toString('base64'), 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ From: TWILIO_FROM, To: toNum, Body: body }).toString()
+        });
+      };
+
+      // Text customer
+      if (phone) await sendSms(phone, `Hi ${name}! Your ${service} at Porter's Nails has been rescheduled to ${new_date} at ${new_time}. Questions? Call (281) 747-7421.`);
+
+      // Text tech
+      if (tech_name && tech_name !== 'Any available') {
+        const techRes = await fetch(`${SUPABASE_URL}/rest/v1/nail_techs?name=eq.${encodeURIComponent(tech_name)}&select=phone`, { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } });
+        if (techRes.ok) { const rows = await techRes.json(); if (rows[0]?.phone) await sendSms(rows[0].phone, `Appointment update: ${name}'s ${service} moved to ${new_date} at ${new_time}. - Porter's Nails`); }
+      }
+
+      // Email customer
+      if (email) {
+        await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            from: "Porter's Nails <bookings@portersnailsandspa.com>",
+            to: [email],
+            subject: "Your appointment has been rescheduled",
+            html: `<div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:24px">
+              <h2 style="color:#B84A6E">Appointment rescheduled 📅</h2>
+              <p>Hi ${name}! Your <strong>${service}</strong> appointment has been moved:</p>
+              <table style="width:100%;border-collapse:collapse;font-size:15px;margin:16px 0">
+                <tr style="border-bottom:1px solid #f0d0d8"><td style="padding:8px 0;font-weight:600;color:#888">Was</td><td style="text-decoration:line-through;color:#888">${old_date} at ${old_time}</td></tr>
+                <tr><td style="padding:8px 0;font-weight:600">Now</td><td><strong>${new_date} at ${new_time}</strong></td></tr>
+              </table>
+              <p style="color:#555;font-size:14px">Questions? Call <a href="tel:2817477421" style="color:#B84A6E">(281) 747-7421</a>.</p>
+            </div>`
+          })
+        });
+      }
+      return res.status(200).json({ success: true });
+    }
+
     // Build the update payload — include tech_name if provided (for "any available" assignments)
     const updatePayload = { status };
     if (tech_name) updatePayload.tech_name = tech_name;
