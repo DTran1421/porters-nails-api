@@ -108,14 +108,15 @@ module.exports = async function handler(req, res) {
   // ── POST: create a new booking ─────────────────────────────────────────
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { name, phone, email, service, category, techName, date, time, notes, priceLabel } = req.body;
+  const { name, phone, email, service, category, techName, date, time, notes, priceLabel, walkin } = req.body;
   if (!name || !phone || !service) return res.status(400).json({ error: 'Missing required fields' });
 
   try {
     // 1 — Generate unique token for customer self-service link
     const token = Math.random().toString(36).slice(2) + Date.now().toString(36) + Math.random().toString(36).slice(2);
 
-    // 2 — Store in Supabase
+    // 2 — Store in Supabase (walk-ins go straight to confirmed)
+    const apptStatus = walkin ? 'confirmed' : 'pending';
     const dbRes = await fetch(`${SUPABASE_URL}/rest/v1/appointments`, {
       method: 'POST',
       headers: {
@@ -125,7 +126,7 @@ module.exports = async function handler(req, res) {
         'Prefer': 'return=minimal'
       },
       body: JSON.stringify({ name, phone, email: email || null, service, category,
-        tech_name: techName, date, time, notes: notes || null, price: priceLabel || null, status: 'pending', token })
+        tech_name: techName, date, time, notes: notes || null, price: priceLabel || null, status: apptStatus, token })
     });
     if (!dbRes.ok) throw new Error(`Supabase error: ${dbRes.status}`);
 
