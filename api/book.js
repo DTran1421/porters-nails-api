@@ -2,6 +2,8 @@
 // GET  → returns all appointments for the dashboard
 // POST → receives a new booking, stores it, emails owner + customer
 
+const { logMessage } = require('./log');
+
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -13,11 +15,10 @@ module.exports = async function handler(req, res) {
   const SUPABASE_SVC_KEY = process.env.SUPABASE_SERVICE_KEY;
   const OWNER_EMAIL      = process.env.OWNER_EMAIL;
 
-  // ── GET: return appointments, booked slots, or nail techs ────────────
+  // ── GET ───────────────────────────────────────────────────────────────
   if (req.method === 'GET') {
     try {
       if (req.query.settings === '1') {
-        // Return site-wide settings (hero photo etc.)
         const r = await fetch(`${SUPABASE_URL}/rest/v1/site_settings`, {
           headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` }
         });
@@ -28,7 +29,6 @@ module.exports = async function handler(req, res) {
         return res.status(200).json(out);
       }
       if (req.query.techs === '1') {
-        // Return nail techs list for the booking wizard
         const r = await fetch(`${SUPABASE_URL}/rest/v1/nail_techs?order=name.asc`, {
           headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` }
         });
@@ -36,11 +36,9 @@ module.exports = async function handler(req, res) {
         return res.status(200).json(await r.json());
       }
       if (req.query.slots === '1') {
-        // Return booked time slots for a specific tech + date (for booking wizard)
         const { tech, date } = req.query;
         if (!date) return res.status(200).json({ booked: [], bookedByTech: {} });
         if (tech === 'any') {
-          // Return booked slots grouped by tech for this date (for "anyone available" mode)
           const r = await fetch(
             `${SUPABASE_URL}/rest/v1/appointments?date=eq.${date}&status=in.(pending,confirmed)&select=tech_name,time`,
             { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } }
@@ -55,55 +53,38 @@ module.exports = async function handler(req, res) {
           return res.status(200).json({ bookedByTech });
         }
         if (!tech) return res.status(200).json({ booked: [] });
-        // Fetch slots for this specific tech AND any "Any available" bookings on this date
-        // Exclude the appointment being assigned (it's the one we're processing)
         const exclude = req.query.exclude || '';
         const anyFilter = exclude
           ? `tech_name=in.(Any%20available,To%20be%20assigned)&date=eq.${date}&status=in.(pending,confirmed)&id=neq.${exclude}&select=time`
           : `tech_name=in.(Any%20available,To%20be%20assigned)&date=eq.${date}&status=in.(pending,confirmed)&select=time`;
         const [techRes, anyRes, blockRes] = await Promise.all([
-          fetch(
-            `${SUPABASE_URL}/rest/v1/appointments?tech_name=eq.${encodeURIComponent(tech)}&date=eq.${date}&status=in.(pending,confirmed)&select=time`,
-            { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } }
-          ),
-          fetch(
-            `${SUPABASE_URL}/rest/v1/appointments?${anyFilter}`,
-            { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } }
-          ),
-          fetch(
-            `${SUPABASE_URL}/rest/v1/blocked_times?date=eq.${date}&or=(tech_name.eq.${encodeURIComponent(tech)},tech_name.is.null)`,
-            { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } }
-          )
+          fetch(`${SUPABASE_URL}/rest/v1/appointments?tech_name=eq.${encodeURIComponent(tech)}&date=eq.${date}&status=in.(pending,confirmed)&select=time`,
+            { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } }),
+          fetch(`${SUPABASE_URL}/rest/v1/appointments?${anyFilter}`,
+            { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } }),
+          fetch(`${SUPABASE_URL}/rest/v1/blocked_times?date=eq.${date}&or=(tech_name.eq.${encodeURIComponent(tech)},tech_name.is.null)`,
+            { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } })
         ]);
         if (!techRes.ok || !anyRes.ok) throw new Error('Supabase query failed');
-        const techRows = await techRes.json();
-        const anyRows  = await anyRes.json();
+        const techRows  = await techRes.json();
+        const anyRows   = await anyRes.json();
         const blockRows = blockRes.ok ? await blockRes.json() : [];
-        // For whole-day blocks, mark all slots; for time-range blocks mark specific slots
         const blockedTimes = [];
-        blockRows.forEach(b => {
-          if (!b.start_time && !b.end_time) {
-            // Whole day block — return a special flag
-            blockedTimes.push('ALL_DAY');
-          }
-        });
+        blockRows.forEach(b => { if (!b.start_time && !b.end_time) blockedTimes.push('ALL_DAY'); });
         const booked = [...new Set([...techRows.map(a => a.time), ...anyRows.map(a => a.time)])];
         return res.status(200).json({ booked, blocked: blockedTimes });
       } else {
-        // Return all appointments for the owner dashboard
         const r = await fetch(`${SUPABASE_URL}/rest/v1/appointments?order=date.asc,time.asc`, {
           headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` }
         });
         if (!r.ok) throw new Error(`Supabase ${r.status}`);
-        const data = await r.json();
-        return res.status(200).json(data);
+        return res.status(200).json(await r.json());
       }
     } catch (err) {
       console.error('GET error:', err.message);
       return res.status(500).json({ error: err.message });
     }
   }
-
 
   // ── POST: create a new booking ─────────────────────────────────────────
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
@@ -112,25 +93,21 @@ module.exports = async function handler(req, res) {
   if (!name || !phone || !service) return res.status(400).json({ error: 'Missing required fields' });
 
   try {
-    // 1 — Generate unique token for customer self-service link
     const token = Math.random().toString(36).slice(2) + Date.now().toString(36) + Math.random().toString(36).slice(2);
-
-    // 2 — Store in Supabase (walk-ins go straight to confirmed)
     const apptStatus = walkin ? 'confirmed' : 'pending';
+
     const dbRes = await fetch(`${SUPABASE_URL}/rest/v1/appointments`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': SUPABASE_SVC_KEY,
-        'Authorization': `Bearer ${SUPABASE_SVC_KEY}`,
-        'Prefer': 'return=minimal'
-      },
+      headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}`, 'Prefer': 'return=representation' },
       body: JSON.stringify({ name, phone, email: email || null, service, category,
         tech_name: techName, date, time, notes: notes || null, price: priceLabel || null, status: apptStatus, token })
     });
     if (!dbRes.ok) throw new Error(`Supabase error: ${dbRes.status}`);
+    const [newAppt] = await dbRes.json();
+    const apptId = newAppt?.id;
 
-    // 3 — Notify owner
+    // ── Email owner ───────────────────────────────────────────────────
+    const ownerEmailBody = `New booking request from ${name}: ${service} on ${date} at ${time}`;
     await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
@@ -156,16 +133,19 @@ module.exports = async function handler(req, res) {
         </div>`
       })
     });
+    await logMessage({ type:'email', recipient:OWNER_EMAIL, recipientName:'Owner', subject:`New booking request — ${name}`, body:ownerEmailBody, trigger:'new_booking', appointmentId:apptId });
 
-    // 4 — Confirm to customer with booking link
+    // ── Email customer ────────────────────────────────────────────────
     if (email) {
+      const custSubject = "We got your booking request! 💅";
+      const custBody = `Hi ${name}! We received your appointment request for ${service} on ${date} at ${time}.`;
       await fetch('https://api.resend.com/emails', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           from: "Porter's Nails <bookings@portersnailsandspa.com>",
           to: [email],
-          subject: "We got your booking request! 💅",
+          subject: custSubject,
           html: `<div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:24px">
             <h2 style="color:#B84A6E">Thanks, ${name}!</h2>
             <p style="color:#555;font-size:15px">We received your appointment request at <strong>Porter's Nails and Spa</strong>. We'll confirm it shortly!</p>
@@ -175,37 +155,34 @@ module.exports = async function handler(req, res) {
               <div><strong>Time:</strong> ${time}</div>
             </div>
             <p style="color:#555;font-size:14px">Questions? Call or text us at <a href="tel:2817477421" style="color:#B84A6E">(281) 747-7421</a>.</p>
-              <a href="https://portersnailsandspa.com?booking=${token}" style="display:inline-block;margin-top:16px;background:#B84A6E;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700">View or reschedule my booking →</a>
+            <a href="https://portersnailsandspa.com?booking=${token}" style="display:inline-block;margin-top:16px;background:#B84A6E;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700">View or reschedule my booking →</a>
             <p style="color:#aaa;font-size:12px">23830 FM1314 Suite C, Porter, TX 77365<br>Mon–Sat 9 AM–6:30 PM</p>
           </div>`
         })
       });
+      await logMessage({ type:'email', recipient:email, recipientName:name, subject:custSubject, body:custBody, trigger:'new_booking', appointmentId:apptId });
     }
 
-    // ── SMS via Twilio ──────────────────────────────────────────────────
+    // ── SMS ───────────────────────────────────────────────────────────
     const TWILIO_SID   = process.env.TWILIO_SID;
     const TWILIO_TOKEN = process.env.TWILIO_TOKEN;
     const TWILIO_FROM  = process.env.TWILIO_FROM;
 
-    const sendSms = async (to, body) => {
+    const sendSms = async (to, body, recipientName, trigger) => {
       if (!TWILIO_SID || !TWILIO_TOKEN || !TWILIO_FROM || !to) return;
       const toNum = '+1' + to.replace(/\D/g,'').slice(-10);
       await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Messages.json`, {
         method: 'POST',
-        headers: {
-          'Authorization': 'Basic ' + Buffer.from(`${TWILIO_SID}:${TWILIO_TOKEN}`).toString('base64'),
-          'Content-Type': 'application/x-www-form-urlencoded'
-        },
+        headers: { 'Authorization': 'Basic ' + Buffer.from(`${TWILIO_SID}:${TWILIO_TOKEN}`).toString('base64'), 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ From: TWILIO_FROM, To: toNum, Body: body }).toString()
       });
+      await logMessage({ type:'sms', recipient:toNum, recipientName, body, trigger, appointmentId:apptId });
     };
 
-    // Text the customer
     if (phone) {
-      await sendSms(phone, `Hi ${name}! We received your appointment request for ${service} on ${date} at ${time}. We'll confirm shortly! Questions? Call (281) 747-7421. - Porter's Nails & Spa`);
+      await sendSms(phone, `Hi ${name}! We received your appointment request for ${service} on ${date} at ${time}. We'll confirm shortly! Questions? Call (281) 747-7421. - Porter's Nails & Spa`, name, 'new_booking');
     }
 
-    // Text the assigned tech (if specific tech was selected, not "any available")
     if (techName && techName !== 'Any available' && techName !== 'To be assigned') {
       const techRes = await fetch(
         `${SUPABASE_URL}/rest/v1/nail_techs?name=eq.${encodeURIComponent(techName)}&select=phone`,
@@ -214,7 +191,7 @@ module.exports = async function handler(req, res) {
       if (techRes.ok) {
         const techRows = await techRes.json();
         if (techRows[0]?.phone) {
-          await sendSms(techRows[0].phone, `New booking: ${name} requested ${service} on ${date} at ${time}. Check the dashboard. - Porter's Nails`);
+          await sendSms(techRows[0].phone, `New booking: ${name} requested ${service} on ${date} at ${time}. Check the dashboard. - Porter's Nails`, techName, 'new_booking');
         }
       }
     }
