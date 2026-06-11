@@ -1,8 +1,9 @@
 // Porter's Nails — daily appointment reminders (Vercel cron)
 // Runs daily at 9 AM CT, texts customers and techs about tomorrow's appointments
 
+const { logMessage } = require('./log');
+
 module.exports = async function handler(req, res) {
-  // Only allow Vercel cron calls (or manual GET for testing)
   if (req.method !== 'GET') return res.status(405).end();
 
   const SUPABASE_URL     = process.env.SUPABASE_URL;
@@ -11,29 +12,22 @@ module.exports = async function handler(req, res) {
   const TWILIO_TOKEN     = process.env.TWILIO_TOKEN;
   const TWILIO_FROM      = process.env.TWILIO_FROM;
 
-  const sendSms = async (to, body) => {
+  const sendSms = async (to, body, recipientName, appointmentId) => {
     if (!TWILIO_SID || !to) return;
     const toNum = '+1' + to.replace(/\D/g,'').slice(-10);
     await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Messages.json`, {
       method: 'POST',
-      headers: {
-        'Authorization': 'Basic ' + Buffer.from(`${TWILIO_SID}:${TWILIO_TOKEN}`).toString('base64'),
-        'Content-Type': 'application/x-www-form-urlencoded'
-      },
+      headers: { 'Authorization': 'Basic ' + Buffer.from(`${TWILIO_SID}:${TWILIO_TOKEN}`).toString('base64'), 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ From: TWILIO_FROM, To: toNum, Body: body }).toString()
     });
+    await logMessage({ type:'sms', recipient:toNum, recipientName, body, trigger:'reminder', appointmentId });
   };
 
   try {
-    // Get tomorrow's date in YYYY-MM-DD
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
     const tomorrowStr = tomorrow.toISOString().slice(0, 10);
 
-    // Also get today's date for same-day reminders (booked within last 24hr)
-    const todayStr = new Date().toISOString().slice(0, 10);
-
-    // Fetch confirmed appointments for tomorrow
     const r = await fetch(
       `${SUPABASE_URL}/rest/v1/appointments?date=eq.${tomorrowStr}&status=eq.confirmed`,
       { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } }
@@ -48,15 +42,11 @@ module.exports = async function handler(req, res) {
         return (hr % 12 || 12) + ':' + m + ' ' + ap;
       }) : a.time;
 
-      // Text customer
       if (a.phone) {
-        await sendSms(a.phone,
-          `Reminder: your ${a.service} at Porter's Nails is tomorrow (${tomorrowStr}) at ${timeDisplay}. See you then! Questions? Call (281) 747-7421.`
-        );
+        await sendSms(a.phone, `Reminder: your ${a.service} at Porter's Nails is tomorrow (${tomorrowStr}) at ${timeDisplay}. See you then! Questions? Call (281) 747-7421.`, a.name, a.id);
         sent++;
       }
 
-      // Text tech
       if (a.tech_name && a.tech_name !== 'Any available') {
         const techRes = await fetch(
           `${SUPABASE_URL}/rest/v1/nail_techs?name=eq.${encodeURIComponent(a.tech_name)}&select=phone`,
@@ -65,9 +55,7 @@ module.exports = async function handler(req, res) {
         if (techRes.ok) {
           const techRows = await techRes.json();
           if (techRows[0]?.phone) {
-            await sendSms(techRows[0].phone,
-              `Reminder: ${a.name} has a ${a.service} tomorrow at ${timeDisplay}. - Porter's Nails`
-            );
+            await sendSms(techRows[0].phone, `Reminder: ${a.name} has a ${a.service} tomorrow at ${timeDisplay}. - Porter's Nails`, a.tech_name, a.id);
             sent++;
           }
         }
