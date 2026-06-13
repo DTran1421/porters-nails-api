@@ -1,5 +1,20 @@
 const crypto = require('crypto');
 
+// Simple in-memory rate limiter for login attempts
+const loginAttempts = new Map();
+function checkRateLimit(ip) {
+  const now = Date.now();
+  const window = 15 * 60 * 1000; // 15 minutes
+  const max = 10; // max attempts
+  const key = ip || 'unknown';
+  const attempts = loginAttempts.get(key) || [];
+  const recent = attempts.filter(t => now - t < window);
+  if (recent.length >= max) return false;
+  recent.push(now);
+  loginAttempts.set(key, recent);
+  return true;
+}
+
 function hash(str) {
   return crypto.createHash('sha256').update(str + 'porters-nails-salt').digest('hex');
 }
@@ -65,6 +80,10 @@ module.exports = async function handler(req, res) {
 
       // Login
       if (action === 'login') {
+        const ip = req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown';
+        if (!checkRateLimit(ip)) {
+          return res.status(429).json({ error: 'Too many login attempts. Please try again in 15 minutes.' });
+        }
         const account = await getAccount((username || '').trim());
         if (!account || account.password_hash !== hash(password)) {
           return res.status(401).json({ error: 'Incorrect username or password.' });
