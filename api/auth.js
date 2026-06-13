@@ -1,18 +1,15 @@
-// Porter's Nails — owner auth endpoint
 const crypto = require('crypto');
 
-function hash(password) {
-  return crypto.createHash('sha256').update(password + 'porters-nails-salt').digest('hex');
+function hash(str) {
+  return crypto.createHash('sha256').update(str + 'porters-nails-salt').digest('hex');
 }
-
 function generateToken() {
   return crypto.randomBytes(32).toString('hex');
 }
 
 module.exports = async function handler(req, res) {
   var origin = req.headers.origin || '';
-  var allowed = ['https://portersnailsandspa.com','https://www.portersnailsandspa.com'];
-  if(allowed.includes(origin) || origin.endsWith('portersnailsandspa.com')){
+  if (origin.includes('portersnailsandspa.com')) {
     res.setHeader('Access-Control-Allow-Origin', origin);
   }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -49,39 +46,34 @@ module.exports = async function handler(req, res) {
       const stored = await getSetting('owner_session_token');
       const expiry = await getSetting('owner_session_expiry');
       if (!stored || stored !== token) return res.status(401).json({ valid: false });
-      if (expiry && Date.now() > parseInt(expiry)) {
-        return res.status(401).json({ valid: false, reason: 'expired' });
-      }
+      if (expiry && Date.now() > parseInt(expiry)) return res.status(401).json({ valid: false, reason: 'expired' });
       return res.status(200).json({ valid: true });
     }
 
-    // POST — login, logout, set password, change password
     if (req.method === 'POST') {
-      const { action, password, newPassword, token } = req.body || {};
+      const { action, username, password, newPassword } = req.body || {};
 
-      // Check if password is set
-      if (action === 'status') {
-        const pwHash = await getSetting('owner_password_hash');
-        return res.status(200).json({ hasPassword: !!pwHash });
-      }
-
-      // First-time setup — set initial password
+      // First-time setup with username
       if (action === 'setup') {
-        if (!password || password.length < 6) {
-          return res.status(400).json({ error: 'Password must be at least 6 characters' });
-        }
         const existing = await getSetting('owner_password_hash');
-        if (existing) return res.status(403).json({ error: 'Password already set' });
+        if (existing) return res.status(403).json({ error: 'Account already exists. Please sign in.' });
+        if (!username || username.trim().length < 3) return res.status(400).json({ error: 'Username must be at least 3 characters.' });
+        if (!password || password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters.' });
+        await setSetting('owner_username', username.trim().toLowerCase());
         await setSetting('owner_password_hash', hash(password));
         return res.status(200).json({ success: true });
       }
 
-      // Login
+      // Login — check username + password
       if (action === 'login') {
+        const storedUsername = await getSetting('owner_username');
         const pwHash = await getSetting('owner_password_hash');
-        if (!pwHash) return res.status(400).json({ error: 'No password set' });
+        if (!pwHash) return res.status(400).json({ error: 'No account found. Please register first.' });
+        if (!storedUsername || storedUsername !== (username||'').trim().toLowerCase()) {
+          return res.status(401).json({ error: 'Incorrect username or password.' });
+        }
         if (hash(password) !== pwHash) {
-          return res.status(401).json({ error: 'Incorrect password' });
+          return res.status(401).json({ error: 'Incorrect username or password.' });
         }
         const sessionToken = generateToken();
         const expiry = Date.now() + (12 * 60 * 60 * 1000); // 12 hours
@@ -101,25 +93,19 @@ module.exports = async function handler(req, res) {
       if (action === 'change') {
         const sessionTok = req.headers['x-session-token'];
         const stored = await getSetting('owner_session_token');
-        if (!sessionTok || stored !== sessionTok) {
-          return res.status(401).json({ error: 'Not authenticated' });
-        }
+        if (!sessionTok || stored !== sessionTok) return res.status(401).json({ error: 'Not authenticated.' });
         const pwHash = await getSetting('owner_password_hash');
-        if (hash(password) !== pwHash) {
-          return res.status(401).json({ error: 'Current password incorrect' });
-        }
-        if (!newPassword || newPassword.length < 6) {
-          return res.status(400).json({ error: 'New password must be at least 6 characters' });
-        }
+        if (hash(password) !== pwHash) return res.status(401).json({ error: 'Current password incorrect.' });
+        if (!newPassword || newPassword.length < 6) return res.status(400).json({ error: 'New password must be at least 6 characters.' });
         await setSetting('owner_password_hash', hash(newPassword));
         await setSetting('owner_session_token', '');
         return res.status(200).json({ success: true });
       }
 
-      return res.status(400).json({ error: 'Unknown action' });
+      return res.status(400).json({ error: 'Unknown action.' });
     }
 
-    return res.status(405).json({ error: 'Method not allowed' });
+    return res.status(405).json({ error: 'Method not allowed.' });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: err.message });
