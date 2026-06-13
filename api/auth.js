@@ -12,7 +12,7 @@ module.exports = async function handler(req, res) {
   if (origin.includes('portersnailsandspa.com')) {
     res.setHeader('Access-Control-Allow-Origin', origin);
   }
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-session-token');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
@@ -30,75 +30,131 @@ module.exports = async function handler(req, res) {
     const data = await r.json();
     return data[0]?.value || null;
   }
-
   async function setSetting(key, value) {
     await fetch(`${SUPABASE_URL}/rest/v1/site_settings`, {
-      method: 'POST', headers,
-      body: JSON.stringify({ key, value })
+      method: 'POST', headers, body: JSON.stringify({ key, value })
     });
+  }
+  async function getAccount(username) {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/owner_accounts?username=eq.${encodeURIComponent(username.toLowerCase())}`, { headers });
+    const data = await r.json();
+    return data[0] || null;
+  }
+  async function verifySession(token) {
+    if (!token) return null;
+    const stored = await getSetting('owner_session_token');
+    const expiry = await getSetting('owner_session_expiry');
+    const storedUser = await getSetting('owner_session_user');
+    if (!stored || stored !== token) return null;
+    if (expiry && Date.now() > parseInt(expiry)) return null;
+    return storedUser || null;
   }
 
   try {
     // GET — verify session token
     if (req.method === 'GET') {
       const token = req.headers['x-session-token'];
-      if (!token) return res.status(401).json({ valid: false });
-      const stored = await getSetting('owner_session_token');
-      const expiry = await getSetting('owner_session_expiry');
-      if (!stored || stored !== token) return res.status(401).json({ valid: false });
-      if (expiry && Date.now() > parseInt(expiry)) return res.status(401).json({ valid: false, reason: 'expired' });
-      return res.status(200).json({ valid: true });
+      const user = await verifySession(token);
+      if (!user) return res.status(401).json({ valid: false });
+      const account = await getAccount(user);
+      return res.status(200).json({ valid: true, username: user, role: account?.role || 'owner' });
     }
 
     if (req.method === 'POST') {
-      const { action, username, password, newPassword } = req.body || {};
+      const { action, username, password, newPassword, targetUsername, targetPassword, targetRole } = req.body || {};
 
-      // First-time setup with username
-      if (action === 'setup') {
-        const existing = await getSetting('owner_password_hash');
-        if (existing) return res.status(403).json({ error: 'Account already exists. Please sign in.' });
-        if (!username || username.trim().length < 3) return res.status(400).json({ error: 'Username must be at least 3 characters.' });
-        if (!password || password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters.' });
-        await setSetting('owner_username', username.trim().toLowerCase());
-        await setSetting('owner_password_hash', hash(password));
-        return res.status(200).json({ success: true });
-      }
-
-      // Login — check username + password
+      // Login
       if (action === 'login') {
-        const storedUsername = await getSetting('owner_username');
-        const pwHash = await getSetting('owner_password_hash');
-        if (!pwHash) return res.status(400).json({ error: 'No account found. Please register first.' });
-        if (!storedUsername || storedUsername !== (username||'').trim().toLowerCase()) {
-          return res.status(401).json({ error: 'Incorrect username or password.' });
-        }
-        if (hash(password) !== pwHash) {
+        const account = await getAccount((username || '').trim());
+        if (!account || account.password_hash !== hash(password)) {
           return res.status(401).json({ error: 'Incorrect username or password.' });
         }
         const sessionToken = generateToken();
-        const expiry = Date.now() + (12 * 60 * 60 * 1000); // 12 hours
+        const expiry = Date.now() + (12 * 60 * 60 * 1000);
         await setSetting('owner_session_token', sessionToken);
         await setSetting('owner_session_expiry', String(expiry));
-        return res.status(200).json({ success: true, token: sessionToken });
+        await setSetting('owner_session_user', account.username);
+        // Update last login
+        await fetch(`${SUPABASE_URL}/rest/v1/owner_accounts?username=eq.${encodeURIComponent(account.username)}`, {
+          method: 'PATCH', headers, body: JSON.stringify({ last_login: new Date().toISOString() })
+        });
+        return res.status(200).json({ success: true, token: sessionToken, role: account.role });
       }
 
       // Logout
       if (action === 'logout') {
         await setSetting('owner_session_token', '');
         await setSetting('owner_session_expiry', '0');
+        await setSetting('owner_session_user', '');
         return res.status(200).json({ success: true });
       }
 
-      // Change password
+      // Change own password
       if (action === 'change') {
-        const sessionTok = req.headers['x-session-token'];
-        const stored = await getSetting('owner_session_token');
-        if (!sessionTok || stored !== sessionTok) return res.status(401).json({ error: 'Not authenticated.' });
-        const pwHash = await getSetting('owner_password_hash');
-        if (hash(password) !== pwHash) return res.status(401).json({ error: 'Current password incorrect.' });
-        if (!newPassword || newPassword.length < 6) return res.status(400).json({ error: 'New password must be at least 6 characters.' });
-        await setSetting('owner_password_hash', hash(newPassword));
+        const token = req.headers['x-session-token'];
+        const user = await verifySession(token);
+        if (!user) return res.status(401).json({ error: 'Not authenticated.' });
+        const account = await getAccount(user);
+        if (!account || account.password_hash !== hash(password)) {
+          return res.status(401).json({ error: 'Current password incorrect.' });
+        }
+        if (!newPassword || newPassword.length < 6) {
+          return res.status(400).json({ error: 'New password must be at least 6 characters.' });
+        }
+        await fetch(`${SUPABASE_URL}/rest/v1/owner_accounts?username=eq.${encodeURIComponent(user)}`, {
+          method: 'PATCH', headers, body: JSON.stringify({ password_hash: hash(newPassword) })
+        });
         await setSetting('owner_session_token', '');
+        return res.status(200).json({ success: true });
+      }
+
+      // List accounts (admin only)
+      if (action === 'list_accounts') {
+        const token = req.headers['x-session-token'];
+        const user = await verifySession(token);
+        if (!user) return res.status(401).json({ error: 'Not authenticated.' });
+        const account = await getAccount(user);
+        if (account?.role !== 'admin') return res.status(403).json({ error: 'Admin only.' });
+        const r = await fetch(`${SUPABASE_URL}/rest/v1/owner_accounts?select=id,username,role,created_at,last_login&order=created_at.asc`, { headers });
+        return res.status(200).json(await r.json());
+      }
+
+      // Create account (admin only)
+      if (action === 'create_account') {
+        const token = req.headers['x-session-token'];
+        const user = await verifySession(token);
+        if (!user) return res.status(401).json({ error: 'Not authenticated.' });
+        const account = await getAccount(user);
+        if (account?.role !== 'admin') return res.status(403).json({ error: 'Admin only.' });
+        if (!targetUsername || targetUsername.trim().length < 3) return res.status(400).json({ error: 'Username must be at least 3 characters.' });
+        if (!targetPassword || targetPassword.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters.' });
+        const r = await fetch(`${SUPABASE_URL}/rest/v1/owner_accounts`, {
+          method: 'POST', headers: {...headers, 'Prefer': 'return=representation'},
+          body: JSON.stringify({
+            username: targetUsername.trim().toLowerCase(),
+            password_hash: hash(targetPassword),
+            role: targetRole || 'owner'
+          })
+        });
+        if (!r.ok) {
+          const err = await r.json();
+          if (JSON.stringify(err).includes('unique')) return res.status(400).json({ error: 'Username already exists.' });
+          throw new Error(`Supabase ${r.status}`);
+        }
+        return res.status(200).json({ success: true });
+      }
+
+      // Delete account (admin only, can't delete self)
+      if (action === 'delete_account') {
+        const token = req.headers['x-session-token'];
+        const user = await verifySession(token);
+        if (!user) return res.status(401).json({ error: 'Not authenticated.' });
+        const account = await getAccount(user);
+        if (account?.role !== 'admin') return res.status(403).json({ error: 'Admin only.' });
+        if (targetUsername === user) return res.status(400).json({ error: 'Cannot delete your own account.' });
+        await fetch(`${SUPABASE_URL}/rest/v1/owner_accounts?username=eq.${encodeURIComponent(targetUsername)}`, {
+          method: 'DELETE', headers
+        });
         return res.status(200).json({ success: true });
       }
 
