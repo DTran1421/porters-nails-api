@@ -57,12 +57,16 @@ module.exports = async function handler(req, res) {
   }
   async function verifySession(token) {
     if (!token) return null;
-    const stored = await getSetting('owner_session_token');
-    const expiry = await getSetting('owner_session_expiry');
-    const storedUser = await getSetting('owner_session_user');
-    if (!stored || stored !== token) return null;
-    if (expiry && Date.now() > parseInt(expiry)) return null;
-    return storedUser || null;
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/owner_sessions?token=eq.${encodeURIComponent(token)}`, { headers });
+    const data = await r.json();
+    const session = data[0];
+    if (!session) return null;
+    if (Date.now() > parseInt(session.expiry)) {
+      // Clean up expired session
+      await fetch(`${SUPABASE_URL}/rest/v1/owner_sessions?token=eq.${encodeURIComponent(token)}`, { method: 'DELETE', headers });
+      return null;
+    }
+    return session.username;
   }
 
   try {
@@ -90,9 +94,10 @@ module.exports = async function handler(req, res) {
         }
         const sessionToken = generateToken();
         const expiry = Date.now() + (12 * 60 * 60 * 1000);
-        await setSetting('owner_session_token', sessionToken);
-        await setSetting('owner_session_expiry', String(expiry));
-        await setSetting('owner_session_user', account.username);
+        await fetch(`${SUPABASE_URL}/rest/v1/owner_sessions`, {
+          method: 'POST', headers,
+          body: JSON.stringify({ token: sessionToken, username: account.username, expiry: expiry })
+        });
         // Update last login
         await fetch(`${SUPABASE_URL}/rest/v1/owner_accounts?username=eq.${encodeURIComponent(account.username)}`, {
           method: 'PATCH', headers, body: JSON.stringify({ last_login: new Date().toISOString() })
@@ -100,11 +105,12 @@ module.exports = async function handler(req, res) {
         return res.status(200).json({ success: true, token: sessionToken, role: account.role });
       }
 
-      // Logout
+      // Logout — delete only this session
       if (action === 'logout') {
-        await setSetting('owner_session_token', '');
-        await setSetting('owner_session_expiry', '0');
-        await setSetting('owner_session_user', '');
+        const token = req.headers['x-session-token'];
+        if (token) {
+          await fetch(`${SUPABASE_URL}/rest/v1/owner_sessions?token=eq.${encodeURIComponent(token)}`, { method: 'DELETE', headers });
+        }
         return res.status(200).json({ success: true });
       }
 
@@ -123,7 +129,8 @@ module.exports = async function handler(req, res) {
         await fetch(`${SUPABASE_URL}/rest/v1/owner_accounts?username=eq.${encodeURIComponent(user)}`, {
           method: 'PATCH', headers, body: JSON.stringify({ password_hash: hash(newPassword) })
         });
-        await setSetting('owner_session_token', '');
+        // Invalidate all sessions for this user
+        await fetch(`${SUPABASE_URL}/rest/v1/owner_sessions?username=eq.${encodeURIComponent(user)}`, { method: 'DELETE', headers });
         return res.status(200).json({ success: true });
       }
 
@@ -174,6 +181,7 @@ module.exports = async function handler(req, res) {
         await fetch(`${SUPABASE_URL}/rest/v1/owner_accounts?username=eq.${encodeURIComponent(targetUsername)}`, {
           method: 'DELETE', headers
         });
+        await fetch(`${SUPABASE_URL}/rest/v1/owner_sessions?username=eq.${encodeURIComponent(targetUsername)}`, { method: 'DELETE', headers });
         return res.status(200).json({ success: true });
       }
 

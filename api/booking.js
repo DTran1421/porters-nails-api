@@ -76,7 +76,7 @@ module.exports = async function handler(req, res) {
               <tr style="border-bottom:1px solid #f0d0d8"><td style="padding:8px 0;font-weight:600">Requested</td><td>${service || orig.service} — ${date} at ${time}</td></tr>
               <tr><td style="padding:8px 0;font-weight:600">Tech</td><td>${techName || orig.tech_name}</td></tr>
             </table>
-            <a href="https://portersnailsandspa.com/manage/manage.html" style="display:inline-block;margin-top:16px;background:#B84A6E;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700">Open Dashboard →</a>
+            <a href="https://portersnailsandspa.com/manage/" style="display:inline-block;margin-top:16px;background:#B84A6E;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700">Open Dashboard →</a>
           </div>`
         })
       });

@@ -132,7 +132,7 @@ module.exports = async function handler(req, res) {
             <tr style="border-bottom:1px solid #f0d0d8"><td style="padding:10px 0;font-weight:600">Time</td><td>${time}</td></tr>
             <tr><td style="padding:10px 0;font-weight:600">Notes</td><td>${notes || 'None'}</td></tr>
           </table>
-          <a href="https://portersnailsandspa.com/manage/manage.html"
+          <a href="https://portersnailsandspa.com/manage/"
             style="display:inline-block;margin-top:24px;background:#B84A6E;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700">
             Open Dashboard →</a>
         </div>`
