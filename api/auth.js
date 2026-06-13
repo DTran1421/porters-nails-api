@@ -10,7 +10,11 @@ function generateToken() {
 }
 
 module.exports = async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', 'https://portersnailsandspa.com');
+  var origin = req.headers.origin || '';
+  var allowed = ['https://portersnailsandspa.com','https://www.portersnailsandspa.com'];
+  if(allowed.includes(origin) || origin.endsWith('portersnailsandspa.com')){
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-session-token');
   if (req.method === 'OPTIONS') return res.status(200).end();
