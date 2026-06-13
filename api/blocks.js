@@ -4,7 +4,7 @@
 // DELETE ?id=X → remove a block
 
 module.exports = async function handler(req, res) {
-    var origin = req.headers.origin || '';
+  var origin = req.headers.origin || '';
   if (origin.includes('portersnailsandspa.com')) {
     res.setHeader('Access-Control-Allow-Origin', origin);
   } else {

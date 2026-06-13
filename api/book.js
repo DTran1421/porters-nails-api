@@ -5,7 +5,7 @@
 const { logMessage } = require('./log');
 
 module.exports = async function handler(req, res) {
-    var origin = req.headers.origin || '';
+  var origin = req.headers.origin || '';
   if (origin.includes('portersnailsandspa.com')) {
     res.setHeader('Access-Control-Allow-Origin', origin);
   } else {
@@ -100,6 +100,20 @@ module.exports = async function handler(req, res) {
   try {
     const token = Math.random().toString(36).slice(2) + Date.now().toString(36) + Math.random().toString(36).slice(2);
     const apptStatus = walkin ? 'confirmed' : 'pending';
+
+    // Re-check slot availability to prevent double-booking (skip for walk-ins and "any available")
+    if (!walkin && date && time && techName && techName !== 'Any available' && techName !== 'To be assigned') {
+      const conflictRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/appointments?date=eq.${date}&time=eq.${encodeURIComponent(time)}&status=in.(pending,confirmed)&or=(tech_name.eq.${encodeURIComponent(techName)},tech_name.in.(Any%20available,To%20be%20assigned))&select=id`,
+        { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } }
+      );
+      if (conflictRes.ok) {
+        const conflicts = await conflictRes.json();
+        if (conflicts.length > 0) {
+          return res.status(409).json({ error: 'slot_taken', message: 'Sorry, that time was just booked. Please pick another time.' });
+        }
+      }
+    }
 
     const dbRes = await fetch(`${SUPABASE_URL}/rest/v1/appointments`, {
       method: 'POST',

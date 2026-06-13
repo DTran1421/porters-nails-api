@@ -6,6 +6,15 @@ const { logMessage } = require('./log');
 module.exports = async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).end();
 
+  // Verify request comes from Vercel cron (or has the secret)
+  const CRON_SECRET = process.env.CRON_SECRET;
+  if (CRON_SECRET) {
+    const authHeader = req.headers['authorization'] || '';
+    if (authHeader !== `Bearer ${CRON_SECRET}`) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+  }
+
   const SUPABASE_URL     = process.env.SUPABASE_URL;
   const SUPABASE_SVC_KEY = process.env.SUPABASE_SERVICE_KEY;
   const TWILIO_SID       = process.env.TWILIO_SID;
