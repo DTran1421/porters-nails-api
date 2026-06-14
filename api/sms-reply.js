@@ -59,7 +59,9 @@ module.exports = async function handler(req, res) {
     const responder = managers.find(m => (m.phone||'').replace(/\D/g,'').slice(-10) === fromPhone);
 
     if (managers.length && !responder) {
-      return reply("Sorry, this number isn't authorized to manage appointments.");
+      // Unknown sender (likely a customer) — stay silent, don't send a confusing reply.
+      res.setHeader('Content-Type', 'text/xml');
+      return res.status(200).send('<Response></Response>');
     }
     const responderName = responder ? responder.name : 'A manager';
 
