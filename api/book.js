@@ -202,19 +202,17 @@ module.exports = async function handler(req, res) {
       await sendSms(phone, `Hi ${name}! We received your appointment request for ${service} on ${date} at ${time}. We'll confirm shortly! Questions? Call (281) 747-7421. - Porter's Nails & Spa`, name, 'new_booking');
     }
 
-    // Notify owner(s) by SMS with reply instructions — phones from owner_accounts table
-    const ownerPhoneRes = await fetch(`${SUPABASE_URL}/rest/v1/owner_accounts?select=phone&phone=not.is.null`, { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } });
-    const ownerPhoneRows = ownerPhoneRes.ok ? await ownerPhoneRes.json() : [];
-    const OWNER_PHONES = ownerPhoneRows.map(o => o.phone).filter(Boolean);
-    if (OWNER_PHONES.length) {
+    // Notify the manager by SMS with reply instructions — single manager phone from settings
+    const mgrRes = await fetch(`${SUPABASE_URL}/rest/v1/site_settings?key=eq.manager_phone&select=value`, { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } });
+    const mgrRows = mgrRes.ok ? await mgrRes.json() : [];
+    const managerPhone = mgrRows[0]?.value || '';
+    if (managerPhone) {
       const d = new Date(date + 'T00:00:00');
       const mon = d.toLocaleString('en-US',{month:'short'}).toUpperCase();
       const ref = `${mon}${d.getDate()}-${(time||'').replace(/:00/,'').replace(/\s/g,'').toUpperCase()}`;
       const techLine = (techName && techName !== 'Any available' && techName !== 'To be assigned') ? `Requested: ${techName}` : 'Requested: Any available';
       const ownerMsg = `New booking: ${name}\n${service} — ${date} at ${time}\n${techLine}\nReply CONFIRM [name] or DECLINE\nRef: ${ref}\n(AMY, IVY, MIMI, RACHEL)`;
-      for (const op of OWNER_PHONES) {
-        await sendSms(op, ownerMsg, 'Owner', 'new_booking');
-      }
+      await sendSms(managerPhone, ownerMsg, 'Manager', 'new_booking');
     }
 
     if (techName && techName !== 'Any available' && techName !== 'To be assigned') {

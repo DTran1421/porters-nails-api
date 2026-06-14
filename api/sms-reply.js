@@ -53,13 +53,12 @@ module.exports = async function handler(req, res) {
   };
 
   try {
-    // Load authorized owner phones from owner_accounts table
-    const ownerRes = await fetch(`${SUPABASE_URL}/rest/v1/owner_accounts?select=phone&phone=not.is.null`, { headers });
-    const ownerRows = ownerRes.ok ? await ownerRes.json() : [];
-    const OWNER_PHONES = ownerRows.map(o => (o.phone||'').replace(/\D/g,'').slice(-10)).filter(Boolean);
+    // Authorize against the manager phone in settings
+    const mgrRes = await fetch(`${SUPABASE_URL}/rest/v1/site_settings?key=eq.manager_phone&select=value`, { headers });
+    const mgrRows = mgrRes.ok ? await mgrRes.json() : [];
+    const managerPhone = (mgrRows[0]?.value || '').replace(/\D/g,'').slice(-10);
 
-    // Only known owners can act
-    if (OWNER_PHONES.length && !OWNER_PHONES.includes(fromPhone)) {
+    if (managerPhone && fromPhone !== managerPhone) {
       return reply("Sorry, this number isn't authorized to manage appointments.");
     }
 
