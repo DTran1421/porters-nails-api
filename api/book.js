@@ -34,7 +34,7 @@ module.exports = async function handler(req, res) {
         return res.status(200).json(out);
       }
       if (req.query.techs === '1') {
-        const r = await fetch(`${SUPABASE_URL}/rest/v1/nail_techs?order=name.asc`, {
+        const r = await fetch(`${SUPABASE_URL}/rest/v1/nail_techs?order=name.asc&manager_only=eq.false`, {
           headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` }
         });
         if (!r.ok) throw new Error(`Supabase ${r.status}`);
