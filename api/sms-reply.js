@@ -53,14 +53,23 @@ module.exports = async function handler(req, res) {
   };
 
   try {
-    // Authorize against the manager phone in settings
-    const mgrRes = await fetch(`${SUPABASE_URL}/rest/v1/site_settings?key=eq.manager_phone&select=value`, { headers });
-    const mgrRows = mgrRes.ok ? await mgrRes.json() : [];
-    const managerPhone = (mgrRows[0]?.value || '').replace(/\D/g,'').slice(-10);
+    // Load all booking managers (techs with is_manager=true and a phone)
+    const mgrRes = await fetch(`${SUPABASE_URL}/rest/v1/nail_techs?is_manager=eq.true&phone=not.is.null&select=name,phone`, { headers });
+    const managers = mgrRes.ok ? await mgrRes.json() : [];
+    const responder = managers.find(m => (m.phone||'').replace(/\D/g,'').slice(-10) === fromPhone);
 
-    if (managerPhone && fromPhone !== managerPhone) {
+    if (managers.length && !responder) {
       return reply("Sorry, this number isn't authorized to manage appointments.");
     }
+    const responderName = responder ? responder.name : 'A manager';
+
+    // Helper to broadcast to all OTHER managers
+    const broadcastToOthers = async (text, apptId) => {
+      for (const m of managers) {
+        const mp = (m.phone||'').replace(/\D/g,'').slice(-10);
+        if (mp && mp !== fromPhone) await sendSms(m.phone, text, m.name, 'handled_broadcast', apptId);
+      }
+    };
 
     const upper = message.toUpperCase();
     const isConfirm = upper.startsWith('CONFIRM');
@@ -120,10 +129,11 @@ module.exports = async function handler(req, res) {
         body: JSON.stringify({ status: 'declined' })
       });
       const updRows = await upd.json();
-      if (!updRows.length) return reply(`That booking (${appt.name}) was already handled.`);
+      if (!updRows.length) return reply(`That booking (${appt.name}) was already handled by another manager.`);
 
       if (appt.phone) await sendSms(appt.phone, `Hi ${appt.name}, unfortunately we can't accommodate your requested time for ${appt.service}. Please call (281) 747-7421 and we'll find a time that works. - Porter's Nails`, appt.name, 'declined', appt.id);
       if (appt.email) await sendEmail(appt.email, "About your appointment request", `<div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:24px"><h2 style="color:#B84A6E">About your appointment request</h2><p>Hi ${appt.name}, unfortunately we can't accommodate your requested time. Please call or text us at <a href="tel:2817477421">(281) 747-7421</a> and we'll find a time that works.</p></div>`);
+      await broadcastToOthers(`✗ Handled by ${responderName}: ${appt.name}'s request (${appt.date} at ${appt.time}) was declined.`, appt.id);
       return reply(`✓ Declined. ${appt.name} has been notified.`);
     }
 
@@ -153,7 +163,7 @@ module.exports = async function handler(req, res) {
       body: JSON.stringify({ status: 'confirmed', tech_name: assignTech })
     });
     const updRows = await upd.json();
-    if (!updRows.length) return reply(`That booking (${appt.name}) was already handled by someone else.`);
+    if (!updRows.length) return reply(`That booking (${appt.name}) was already handled by another manager.`);
 
     // If this was a reschedule, cancel the original
     if (appt.reschedule_of) {
@@ -171,8 +181,9 @@ module.exports = async function handler(req, res) {
     if (techRows[0].phone) await sendSms(techRows[0].phone, `Hi ${assignTech}! New appointment: ${appt.name} — ${appt.service} on ${appt.date} at ${appt.time}. - Porter's Nails`, assignTech, 'confirmed', appt.id);
 
     // Email owner receipt
-    if (OWNER_EMAIL) await sendEmail(OWNER_EMAIL, `Confirmed — ${appt.name}`, `<div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:24px"><h2 style="color:#3B6D11">✓ Appointment Confirmed</h2><p>You confirmed <strong>${appt.name}'s</strong> appointment via text.</p><table style="width:100%;border-collapse:collapse;font-size:15px;margin:16px 0"><tr style="border-bottom:1px solid #f0d0d8"><td style="padding:8px 0;font-weight:600">Service</td><td>${appt.service}</td></tr><tr style="border-bottom:1px solid #f0d0d8"><td style="padding:8px 0;font-weight:600">When</td><td>${appt.date} at ${appt.time}</td></tr><tr><td style="padding:8px 0;font-weight:600">Assigned to</td><td>${assignTech}</td></tr></table><p style="color:#555;font-size:13px">${appt.name} and ${assignTech} have been notified.</p></div>`);
+    if (OWNER_EMAIL) await sendEmail(OWNER_EMAIL, `Confirmed — ${appt.name}`, `<div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:24px"><h2 style="color:#3B6D11">✓ Appointment Confirmed</h2><p><strong>${responderName}</strong> confirmed <strong>${appt.name}'s</strong> appointment via text.</p><table style="width:100%;border-collapse:collapse;font-size:15px;margin:16px 0"><tr style="border-bottom:1px solid #f0d0d8"><td style="padding:8px 0;font-weight:600">Service</td><td>${appt.service}</td></tr><tr style="border-bottom:1px solid #f0d0d8"><td style="padding:8px 0;font-weight:600">When</td><td>${appt.date} at ${appt.time}</td></tr><tr><td style="padding:8px 0;font-weight:600">Assigned to</td><td>${assignTech}</td></tr></table><p style="color:#555;font-size:13px">${appt.name} and ${assignTech} have been notified.</p></div>`);
 
+    await broadcastToOthers(`✓ Handled by ${responderName}: ${appt.name} confirmed with ${assignTech}, ${appt.date} at ${appt.time}.`, appt.id);
     return reply(`✓ Confirmed! ${appt.name} assigned to ${assignTech}. Customer${techRows[0].phone ? ' and '+assignTech : ''} notified.`);
 
   } catch (err) {

@@ -202,17 +202,18 @@ module.exports = async function handler(req, res) {
       await sendSms(phone, `Hi ${name}! We received your appointment request for ${service} on ${date} at ${time}. We'll confirm shortly! Questions? Call (281) 747-7421. - Porter's Nails & Spa`, name, 'new_booking');
     }
 
-    // Notify the manager by SMS with reply instructions — single manager phone from settings
-    const mgrRes = await fetch(`${SUPABASE_URL}/rest/v1/site_settings?key=eq.manager_phone&select=value`, { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } });
-    const mgrRows = mgrRes.ok ? await mgrRes.json() : [];
-    const managerPhone = mgrRows[0]?.value || '';
-    if (managerPhone) {
+    // Notify all booking managers (techs with is_manager=true and a phone)
+    const mgrRes = await fetch(`${SUPABASE_URL}/rest/v1/nail_techs?is_manager=eq.true&phone=not.is.null&select=name,phone`, { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } });
+    const managers = mgrRes.ok ? await mgrRes.json() : [];
+    if (managers.length) {
       const d = new Date(date + 'T00:00:00');
       const mon = d.toLocaleString('en-US',{month:'short'}).toUpperCase();
       const ref = `${mon}${d.getDate()}-${(time||'').replace(/:00/,'').replace(/\s/g,'').toUpperCase()}`;
       const techLine = (techName && techName !== 'Any available' && techName !== 'To be assigned') ? `Requested: ${techName}` : 'Requested: Any available';
-      const ownerMsg = `New booking: ${name}\n${service} — ${date} at ${time}\n${techLine}\nReply CONFIRM [name] or DECLINE\nRef: ${ref}\n(AMY, IVY, MIMI, RACHEL)`;
-      await sendSms(managerPhone, ownerMsg, 'Manager', 'new_booking');
+      const ownerMsg = `New booking: ${name}\n${service} — ${date} at ${time}\n${techLine}\nReply CONFIRM [name] or DECLINE\nRef: ${ref}`;
+      for (const m of managers) {
+        await sendSms(m.phone, ownerMsg, m.name, 'new_booking');
+      }
     }
 
     if (techName && techName !== 'Any available' && techName !== 'To be assigned') {

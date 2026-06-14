@@ -30,12 +30,12 @@ module.exports = async function handler(req, res) {
     }
 
     if (req.method === 'POST') {
-      const { id, name, phone, cats, days, start_hour, end_hour } = req.body;
+      const { id, name, phone, cats, days, start_hour, end_hour, is_manager } = req.body;
       if (!id || !name) return res.status(400).json({ error: 'Missing id or name' });
       const r = await fetch(`${SUPABASE_URL}/rest/v1/nail_techs`, {
         method: 'POST',
         headers: { ...headers, 'Prefer': 'resolution=merge-duplicates,return=minimal' },
-        body: JSON.stringify({ id, name, phone: phone || null, cats: cats || [], days: days || {}, start_hour: start_hour || 9, end_hour: end_hour || 18, updated_at: new Date().toISOString() })
+        body: JSON.stringify({ id, name, phone: phone || null, cats: cats || [], days: days || {}, start_hour: start_hour || 9, end_hour: end_hour || 18, is_manager: !!is_manager, updated_at: new Date().toISOString() })
       });
       if (!r.ok) throw new Error(`Supabase ${r.status}`);
       return res.status(200).json({ success: true });
