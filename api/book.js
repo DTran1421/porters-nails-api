@@ -202,8 +202,10 @@ module.exports = async function handler(req, res) {
       await sendSms(phone, `Hi ${name}! We received your appointment request for ${service} on ${date} at ${time}. We'll confirm shortly! Questions? Call (281) 747-7421. - Porter's Nails & Spa`, name, 'new_booking');
     }
 
-    // Notify owner(s) by SMS with reply instructions
-    const OWNER_PHONES = (process.env.OWNER_PHONES || '').split(',').map(p => p.trim()).filter(Boolean);
+    // Notify owner(s) by SMS with reply instructions — phones from owner_accounts table
+    const ownerPhoneRes = await fetch(`${SUPABASE_URL}/rest/v1/owner_accounts?select=phone&phone=not.is.null`, { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } });
+    const ownerPhoneRows = ownerPhoneRes.ok ? await ownerPhoneRes.json() : [];
+    const OWNER_PHONES = ownerPhoneRows.map(o => o.phone).filter(Boolean);
     if (OWNER_PHONES.length) {
       const d = new Date(date + 'T00:00:00');
       const mon = d.toLocaleString('en-US',{month:'short'}).toUpperCase();

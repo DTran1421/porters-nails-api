@@ -15,7 +15,6 @@ module.exports = async function handler(req, res) {
   const TWILIO_SID       = process.env.TWILIO_SID;
   const TWILIO_TOKEN     = process.env.TWILIO_TOKEN;
   const TWILIO_FROM      = process.env.TWILIO_FROM;
-  const OWNER_PHONES     = (process.env.OWNER_PHONES || '').split(',').map(p => p.replace(/\D/g,'').slice(-10)).filter(Boolean);
   const headers = { 'Content-Type': 'application/json', 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` };
 
   // Parse Twilio's form-encoded body
@@ -54,6 +53,11 @@ module.exports = async function handler(req, res) {
   };
 
   try {
+    // Load authorized owner phones from owner_accounts table
+    const ownerRes = await fetch(`${SUPABASE_URL}/rest/v1/owner_accounts?select=phone&phone=not.is.null`, { headers });
+    const ownerRows = ownerRes.ok ? await ownerRes.json() : [];
+    const OWNER_PHONES = ownerRows.map(o => (o.phone||'').replace(/\D/g,'').slice(-10)).filter(Boolean);
+
     // Only known owners can act
     if (OWNER_PHONES.length && !OWNER_PHONES.includes(fromPhone)) {
       return reply("Sorry, this number isn't authorized to manage appointments.");

@@ -141,7 +141,7 @@ module.exports = async function handler(req, res) {
         if (!user) return res.status(401).json({ error: 'Not authenticated.' });
         const account = await getAccount(user);
         if (account?.role !== 'admin') return res.status(403).json({ error: 'Admin only.' });
-        const r = await fetch(`${SUPABASE_URL}/rest/v1/owner_accounts?select=id,username,role,created_at,last_login&order=created_at.asc`, { headers });
+        const r = await fetch(`${SUPABASE_URL}/rest/v1/owner_accounts?select=id,username,role,phone,created_at,last_login&order=created_at.asc`, { headers });
         return res.status(200).json(await r.json());
       }
 
@@ -159,7 +159,8 @@ module.exports = async function handler(req, res) {
           body: JSON.stringify({
             username: targetUsername.trim().toLowerCase(),
             password_hash: hash(targetPassword),
-            role: targetRole || 'owner'
+            role: targetRole || 'owner',
+            phone: (req.body.targetPhone || '').replace(/\D/g,'').slice(-10) || null
           })
         });
         if (!r.ok) {
@@ -167,6 +168,19 @@ module.exports = async function handler(req, res) {
           if (JSON.stringify(err).includes('unique')) return res.status(400).json({ error: 'Username already exists.' });
           throw new Error(`Supabase ${r.status}`);
         }
+        return res.status(200).json({ success: true });
+      }
+
+      // Update phone for an account (admin only)
+      if (action === 'update_phone') {
+        const token = req.headers['x-session-token'];
+        const user = await verifySession(token);
+        if (!user) return res.status(401).json({ error: 'Not authenticated.' });
+        const account = await getAccount(user);
+        if (account?.role !== 'admin') return res.status(403).json({ error: 'Admin only.' });
+        await fetch(`${SUPABASE_URL}/rest/v1/owner_accounts?username=eq.${encodeURIComponent(targetUsername)}`, {
+          method: 'PATCH', headers, body: JSON.stringify({ phone: (req.body.targetPhone || '').replace(/\D/g,'').slice(-10) || null })
+        });
         return res.status(200).json({ success: true });
       }
 
