@@ -59,9 +59,8 @@ module.exports = async function handler(req, res) {
     const responder = managers.find(m => (m.phone||'').replace(/\D/g,'').slice(-10) === fromPhone);
 
     if (managers.length && !responder) {
-      // Unknown sender (likely a customer) — stay silent, don't send a confusing reply.
-      res.setHeader('Content-Type', 'text/xml');
-      return res.status(200).send('<Response></Response>');
+      // Unknown sender (likely a customer) — polite redirect to call or visit the site.
+      return reply("Thanks for reaching out to Porter's Nails & Spa! This number isn't monitored for texts. Please call us at (281) 747-7421 or book online at portersnailsandspa.com. 💅");
     }
     const responderName = responder ? responder.name : 'A manager';
 
