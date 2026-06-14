@@ -202,6 +202,19 @@ module.exports = async function handler(req, res) {
       await sendSms(phone, `Hi ${name}! We received your appointment request for ${service} on ${date} at ${time}. We'll confirm shortly! Questions? Call (281) 747-7421. - Porter's Nails & Spa`, name, 'new_booking');
     }
 
+    // Notify owner(s) by SMS with reply instructions
+    const OWNER_PHONES = (process.env.OWNER_PHONES || '').split(',').map(p => p.trim()).filter(Boolean);
+    if (OWNER_PHONES.length) {
+      const d = new Date(date + 'T00:00:00');
+      const mon = d.toLocaleString('en-US',{month:'short'}).toUpperCase();
+      const ref = `${mon}${d.getDate()}-${(time||'').replace(/:00/,'').replace(/\s/g,'').toUpperCase()}`;
+      const techLine = (techName && techName !== 'Any available' && techName !== 'To be assigned') ? `Requested: ${techName}` : 'Requested: Any available';
+      const ownerMsg = `New booking: ${name}\n${service} — ${date} at ${time}\n${techLine}\nReply CONFIRM [name] or DECLINE\nRef: ${ref}\n(AMY, IVY, MIMI, RACHEL)`;
+      for (const op of OWNER_PHONES) {
+        await sendSms(op, ownerMsg, 'Owner', 'new_booking');
+      }
+    }
+
     if (techName && techName !== 'Any available' && techName !== 'To be assigned') {
       const techRes = await fetch(
         `${SUPABASE_URL}/rest/v1/nail_techs?name=eq.${encodeURIComponent(techName)}&select=phone`,
