@@ -89,7 +89,7 @@ module.exports = async function handler(req, res) {
 
     // Cancel original if this is a reschedule approval
     if (status === 'confirmed') {
-      const apptRes = await fetch(`${SUPABASE_URL}/rest/v1/appointments?id=eq.${id}&select=reschedule_of,calendar_event_id,name,service,date,time,phone,email,notes`, {
+      const apptRes = await fetch(`${SUPABASE_URL}/rest/v1/appointments?id=eq.${id}&select=reschedule_of,calendar_event_id,name,service,date,time,phone,email,notes,tech_name`, {
         headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` }
       });
       if (apptRes.ok) {
@@ -106,7 +106,8 @@ module.exports = async function handler(req, res) {
           });
         }
         // Create Google Calendar event for this confirmed appointment
-        const calEventId = await createAppointmentEvent({ ...thisAppt, tech_name: tech_name || 'Any available', date, time, service, name });
+        const resolvedTech = thisAppt.tech_name || tech_name || 'Any available';
+        const calEventId = await createAppointmentEvent({ ...thisAppt, tech_name: resolvedTech, date, time, service, name });
         if (calEventId) {
           await fetch(`${SUPABASE_URL}/rest/v1/appointments?id=eq.${id}`, {
             method: 'PATCH',
