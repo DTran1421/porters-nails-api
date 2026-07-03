@@ -1,6 +1,6 @@
 // Porter's Nails — handles inbound SMS from owners to confirm/decline/assign appointments
 const { logMessage } = require('./log');
-const { createAppointmentEvent, deleteAppointmentEvent } = require('./calendar');
+const { createAppointmentEvent, deleteAppointmentEvent } = require('../lib/calendar');
 
 module.exports = async function handler(req, res) {
   // Twilio sends application/x-www-form-urlencoded POST

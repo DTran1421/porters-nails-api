@@ -1,6 +1,6 @@
 // Porter's Nails — approve, decline, cancel, or reschedule an appointment
 const { logMessage } = require('./log');
-const { createAppointmentEvent, deleteAppointmentEvent } = require('./calendar');
+const { createAppointmentEvent, deleteAppointmentEvent } = require('../lib/calendar');
 
 module.exports = async function handler(req, res) {
   var origin = req.headers.origin || '';

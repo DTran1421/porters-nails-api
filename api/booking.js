@@ -1,6 +1,6 @@
 // Porter's Nails — booking lookup by token (for customer self-service)
 const { logMessage } = require('./log');
-const { deleteAppointmentEvent } = require('./calendar');
+const { deleteAppointmentEvent } = require('../lib/calendar');
 module.exports = async function handler(req, res) {
   var origin = req.headers.origin || '';
   if (origin.includes('portersnailsandspa.com')) {
