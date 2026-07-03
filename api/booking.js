@@ -1,6 +1,6 @@
 // Porter's Nails — booking lookup by token (for customer self-service)
 const { logMessage } = require('./log');
-
+const { deleteAppointmentEvent } = require('./calendar');
 module.exports = async function handler(req, res) {
   var origin = req.headers.origin || '';
   if (origin.includes('portersnailsandspa.com')) {
@@ -50,6 +50,9 @@ module.exports = async function handler(req, res) {
       });
       const updRows = await upd.json();
       if (!updRows.length) return res.status(409).json({ error: 'This appointment was already cancelled or completed.' });
+
+      // Delete Google Calendar event if one exists
+      if (appt.calendar_event_id) await deleteAppointmentEvent(appt.calendar_event_id);
 
       // Notify customer
       if (appt.phone) await sendSms(appt.phone, `Hi ${appt.name}, your ${appt.service} on ${appt.date} at ${appt.time} has been cancelled. To rebook, call (281) 747-7421. - Porter's Nails`, appt.name, 'customer_cancelled', appt.id);

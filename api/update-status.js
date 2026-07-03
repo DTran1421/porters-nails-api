@@ -1,5 +1,6 @@
 // Porter's Nails — approve, decline, cancel, or reschedule an appointment
 const { logMessage } = require('./log');
+const { createAppointmentEvent, deleteAppointmentEvent } = require('./calendar');
 
 module.exports = async function handler(req, res) {
   var origin = req.headers.origin || '';
@@ -88,19 +89,38 @@ module.exports = async function handler(req, res) {
 
     // Cancel original if this is a reschedule approval
     if (status === 'confirmed') {
-      const apptRes = await fetch(`${SUPABASE_URL}/rest/v1/appointments?id=eq.${id}&select=reschedule_of`, {
+      const apptRes = await fetch(`${SUPABASE_URL}/rest/v1/appointments?id=eq.${id}&select=reschedule_of,calendar_event_id,name,service,date,time,phone,email,notes`, {
         headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` }
       });
       if (apptRes.ok) {
         const apptRows = await apptRes.json();
-        if (apptRows[0]?.reschedule_of) {
-          await fetch(`${SUPABASE_URL}/rest/v1/appointments?id=eq.${apptRows[0].reschedule_of}`, {
+        const thisAppt = apptRows[0];
+        if (thisAppt?.reschedule_of) {
+          // Delete original calendar event before cancelling it
+          const origRes = await fetch(`${SUPABASE_URL}/rest/v1/appointments?id=eq.${thisAppt.reschedule_of}&select=calendar_event_id`, { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } });
+          if (origRes.ok) { const origRows = await origRes.json(); if (origRows[0]?.calendar_event_id) await deleteAppointmentEvent(origRows[0].calendar_event_id); }
+          await fetch(`${SUPABASE_URL}/rest/v1/appointments?id=eq.${thisAppt.reschedule_of}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}`, 'Prefer': 'return=minimal' },
             body: JSON.stringify({ status: 'cancelled' })
           });
         }
+        // Create Google Calendar event for this confirmed appointment
+        const calEventId = await createAppointmentEvent({ ...thisAppt, tech_name: tech_name || 'Any available', date, time, service, name });
+        if (calEventId) {
+          await fetch(`${SUPABASE_URL}/rest/v1/appointments?id=eq.${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}`, 'Prefer': 'return=minimal' },
+            body: JSON.stringify({ calendar_event_id: calEventId })
+          });
+        }
       }
+    }
+
+    // Delete calendar event on cancel or decline
+    if (status === 'cancelled' || status === 'declined') {
+      const apptRes = await fetch(`${SUPABASE_URL}/rest/v1/appointments?id=eq.${id}&select=calendar_event_id`, { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } });
+      if (apptRes.ok) { const apptRows = await apptRes.json(); if (apptRows[0]?.calendar_event_id) await deleteAppointmentEvent(apptRows[0].calendar_event_id); }
     }
 
     const isConfirmed = status === 'confirmed';

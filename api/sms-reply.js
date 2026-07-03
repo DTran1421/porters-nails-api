@@ -1,5 +1,6 @@
 // Porter's Nails — handles inbound SMS from owners to confirm/decline/assign appointments
 const { logMessage } = require('./log');
+const { createAppointmentEvent, deleteAppointmentEvent } = require('./calendar');
 
 module.exports = async function handler(req, res) {
   // Twilio sends application/x-www-form-urlencoded POST
@@ -132,6 +133,9 @@ module.exports = async function handler(req, res) {
       const updRows = await upd.json();
       if (!updRows.length) return reply(`That booking (${appt.name}) was already handled by another manager.`);
 
+      // Delete calendar event if one exists
+      if (appt.calendar_event_id) await deleteAppointmentEvent(appt.calendar_event_id);
+
       if (appt.phone) await sendSms(appt.phone, `Hi ${appt.name}, unfortunately we can't accommodate your requested time for ${appt.service}. Please call (281) 747-7421 and we'll find a time that works. - Porter's Nails`, appt.name, 'declined', appt.id);
       if (appt.email) await sendEmail(appt.email, "About your appointment request", `<div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:24px"><h2 style="color:#B84A6E">About your appointment request</h2><p>Hi ${appt.name}, unfortunately we can't accommodate your requested time. Please call or text us at <a href="tel:2817477421">(281) 747-7421</a> and we'll find a time that works.</p></div>`);
       await broadcastToOthers(`✗ Handled by ${responderName}: ${appt.name}'s request (${appt.date} at ${appt.time}) was declined.`, appt.id);
@@ -166,8 +170,20 @@ module.exports = async function handler(req, res) {
     const updRows = await upd.json();
     if (!updRows.length) return reply(`That booking (${appt.name}) was already handled by another manager.`);
 
-    // If this was a reschedule, cancel the original
+    // Create Google Calendar event
+    const calEventId = await createAppointmentEvent({ ...appt, tech_name: assignTech });
+    if (calEventId) {
+      await fetch(`${SUPABASE_URL}/rest/v1/appointments?id=eq.${appt.id}`, {
+        method: 'PATCH', headers: { ...headers, 'Prefer': 'return=minimal' },
+        body: JSON.stringify({ calendar_event_id: calEventId })
+      });
+    }
+
+    // If this was a reschedule, cancel the original and delete its calendar event
     if (appt.reschedule_of) {
+      const origRes = await fetch(`${SUPABASE_URL}/rest/v1/appointments?id=eq.${appt.reschedule_of}&select=calendar_event_id`, { headers });
+      const origRows = await origRes.json();
+      if (origRows[0]?.calendar_event_id) await deleteAppointmentEvent(origRows[0].calendar_event_id);
       await fetch(`${SUPABASE_URL}/rest/v1/appointments?id=eq.${appt.reschedule_of}`, {
         method: 'PATCH', headers: { ...headers, 'Prefer': 'return=minimal' },
         body: JSON.stringify({ status: 'cancelled' })
