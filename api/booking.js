@@ -55,7 +55,7 @@ module.exports = async function handler(req, res) {
       if (appt.calendar_event_id) await deleteAppointmentEvent(appt.calendar_event_id);
 
       // Notify customer
-      if (appt.phone) await sendSms(appt.phone, `Hi ${appt.name}, your ${appt.service} on ${appt.date} at ${appt.time} has been cancelled. To rebook, call (281) 747-7421. - Porter's Nails`, appt.name, 'customer_cancelled', appt.id);
+      if (appt.phone && appt.sms_opt_in) await sendSms(appt.phone, `Hi ${appt.name}, your ${appt.service} on ${appt.date} at ${appt.time} has been cancelled. To rebook, call (281) 747-7421. - Porter's Nails`, appt.name, 'customer_cancelled', appt.id);
       if (appt.email && RESEND_KEY) {
         await fetch('https://api.resend.com/emails', {
           method: 'POST',

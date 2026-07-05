@@ -136,7 +136,7 @@ module.exports = async function handler(req, res) {
       // Delete calendar event if one exists
       if (appt.calendar_event_id) await deleteAppointmentEvent(appt.calendar_event_id);
 
-      if (appt.phone) await sendSms(appt.phone, `Hi ${appt.name}, unfortunately we can't accommodate your requested time for ${appt.service}. Please call (281) 747-7421 and we'll find a time that works. - Porter's Nails`, appt.name, 'declined', appt.id);
+      if (appt.phone && appt.sms_opt_in) await sendSms(appt.phone, `Hi ${appt.name}, unfortunately we can't accommodate your requested time for ${appt.service}. Please call (281) 747-7421 and we'll find a time that works. - Porter's Nails`, appt.name, 'declined', appt.id);
       if (appt.email) await sendEmail(appt.email, "About your appointment request", `<div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:24px"><h2 style="color:#B84A6E">About your appointment request</h2><p>Hi ${appt.name}, unfortunately we can't accommodate your requested time. Please call or text us at <a href="tel:2817477421">(281) 747-7421</a> and we'll find a time that works.</p></div>`);
       await broadcastToOthers(`✗ Handled by ${responderName}: ${appt.name}'s request (${appt.date} at ${appt.time}) was declined.`, appt.id);
       return reply(`✓ Declined. ${appt.name} has been notified.`);
@@ -191,7 +191,7 @@ module.exports = async function handler(req, res) {
     }
 
     // Notify customer
-    if (appt.phone) await sendSms(appt.phone, `Hi ${appt.name}! Your ${appt.service} at Porter's Nails on ${appt.date} at ${appt.time} is confirmed with ${assignTech}. See you then! - Porter's Nails & Spa`, appt.name, 'confirmed', appt.id);
+    if (appt.phone && appt.sms_opt_in) await sendSms(appt.phone, `Hi ${appt.name}! Your ${appt.service} at Porter's Nails on ${appt.date} at ${appt.time} is confirmed with ${assignTech}. See you then! - Porter's Nails & Spa`, appt.name, 'confirmed', appt.id);
     if (appt.email) await sendEmail(appt.email, "Your appointment is confirmed! 💅", `<div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:24px"><h2 style="color:#B84A6E">You're all set, ${appt.name}! 🎉</h2><div style="background:#fdf8f5;border:1px solid #f0d0d8;border-radius:12px;padding:18px;margin:20px 0;font-size:15px"><div style="margin-bottom:8px"><strong>Service:</strong> ${appt.service}</div><div style="margin-bottom:8px"><strong>Date:</strong> ${appt.date}</div><div style="margin-bottom:8px"><strong>Time:</strong> ${appt.time}</div><div><strong>Your nail tech:</strong> ${assignTech}</div></div><p style="color:#555;font-size:14px">Questions? Call <a href="tel:2817477421">(281) 747-7421</a>.</p></div>`);
 
     // Notify assigned tech

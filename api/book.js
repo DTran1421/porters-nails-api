@@ -94,7 +94,7 @@ module.exports = async function handler(req, res) {
   // ── POST: create a new booking ─────────────────────────────────────────
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { name, phone, email, service, category, techName, date, time, notes, priceLabel, walkin } = req.body;
+  const { name, phone, email, service, category, techName, date, time, notes, priceLabel, walkin, smsOptIn } = req.body;
   if (!name || !phone || !service) return res.status(400).json({ error: 'Missing required fields' });
 
   try {
@@ -119,7 +119,7 @@ module.exports = async function handler(req, res) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}`, 'Prefer': 'return=representation' },
       body: JSON.stringify({ name, phone, email: email || null, service, category,
-        tech_name: techName, date, time, notes: notes || null, price: priceLabel || null, status: apptStatus, token })
+        tech_name: techName, date, time, notes: notes || null, price: priceLabel || null, status: apptStatus, token, sms_opt_in: !!smsOptIn })
     });
     if (!dbRes.ok) throw new Error(`Supabase error: ${dbRes.status}`);
     const [newAppt] = await dbRes.json();
@@ -198,7 +198,7 @@ module.exports = async function handler(req, res) {
       await logMessage({ type:'sms', recipient:toNum, recipientName, body, trigger, appointmentId:apptId });
     };
 
-    if (phone) {
+    if (phone && smsOptIn) {
       await sendSms(phone, `Hi ${name}! We received your appointment request for ${service} on ${date} at ${time}. We'll confirm shortly! Questions? Call (281) 747-7421. - Porter's Nails & Spa`, name, 'new_booking');
     }
 
