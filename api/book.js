@@ -202,7 +202,7 @@ module.exports = async function handler(req, res) {
       // Walk-ins are created as confirmed, so the customer gets a confirmation —
       // not the "we'll confirm shortly" message meant for pending web requests.
       const custMsg = walkin
-        ? `Hi ${name}! Your ${service} at Porter's Nails on ${date} at ${time} is confirmed. See you then! Questions? Call (281) 747-7421. Reply STOP to opt out. - Porter's Nails & Spa`
+        ? `Hi ${name}! Your ${service} at Porter's Nails on ${date} at ${time} is confirmed. See you then! Msg&data rates may apply, msg freq varies. Reply HELP for help, STOP to opt out. - Porter's Nails & Spa`
         : `Hi ${name}! We received your appointment request for ${service} on ${date} at ${time}. We'll confirm shortly! Questions? Call (281) 747-7421. - Porter's Nails & Spa`;
       await sendSms(phone, custMsg, name, walkin ? 'confirmed' : 'new_booking');
     }
