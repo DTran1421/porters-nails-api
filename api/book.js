@@ -199,13 +199,20 @@ module.exports = async function handler(req, res) {
     };
 
     if (phone && smsOptIn) {
-      await sendSms(phone, `Hi ${name}! We received your appointment request for ${service} on ${date} at ${time}. We'll confirm shortly! Questions? Call (281) 747-7421. - Porter's Nails & Spa`, name, 'new_booking');
+      // Walk-ins are created as confirmed, so the customer gets a confirmation —
+      // not the "we'll confirm shortly" message meant for pending web requests.
+      const custMsg = walkin
+        ? `Hi ${name}! Your ${service} at Porter's Nails on ${date} at ${time} is confirmed. See you then! Questions? Call (281) 747-7421. Reply STOP to opt out. - Porter's Nails & Spa`
+        : `Hi ${name}! We received your appointment request for ${service} on ${date} at ${time}. We'll confirm shortly! Questions? Call (281) 747-7421. - Porter's Nails & Spa`;
+      await sendSms(phone, custMsg, name, walkin ? 'confirmed' : 'new_booking');
     }
 
-    // Notify all booking managers (techs with is_manager=true and a phone)
+    // Notify all booking managers (techs with is_manager=true and a phone).
+    // Skipped for walk-ins: staff entered it themselves and it's already confirmed,
+    // so the "Reply CONFIRM or DECLINE" prompt would be wrong/noisy.
     const mgrRes = await fetch(`${SUPABASE_URL}/rest/v1/nail_techs?is_manager=eq.true&phone=not.is.null&select=name,phone`, { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } });
     const managers = mgrRes.ok ? await mgrRes.json() : [];
-    if (managers.length) {
+    if (!walkin && managers.length) {
       const d = new Date(date + 'T00:00:00');
       const mon = d.toLocaleString('en-US',{month:'short'}).toUpperCase();
       const ref = `${mon}${d.getDate()}-${(time||'').replace(/:00/,'').replace(/\s/g,'').toUpperCase()}`;
