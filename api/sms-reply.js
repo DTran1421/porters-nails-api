@@ -74,11 +74,12 @@ module.exports = async function handler(req, res) {
     };
 
     const upper = message.toUpperCase();
-    const isConfirm = upper.startsWith('CONFIRM');
-    const isDecline = upper.startsWith('DECLINE');
+    const firstWord = (upper.split(/\s+/)[0] || '');
+    const isConfirm = ['CONFIRM', 'CONFIRMED', 'YES', 'Y'].includes(firstWord);
+    const isDecline = ['DECLINE', 'DECLINED', 'NO', 'N'].includes(firstWord);
 
     if (!isConfirm && !isDecline) {
-      return reply("Reply CONFIRM [tech name] or DECLINE to manage a booking. Example: CONFIRM AMY");
+      return reply("Reply YES [tech name] or NO to manage a booking (CONFIRM/DECLINE also work). Example: YES AMY");
     }
 
     // Parse optional ref (e.g. JUN20-2PM) and tech name
@@ -109,7 +110,7 @@ module.exports = async function handler(req, res) {
         const t = (a.time||'').replace(/:00/,'').replace(/\s/g,'').toUpperCase();
         return ref === `${mon}${day}-${t}` || ref.replace(/[^A-Z0-9]/g,'') === `${mon}${day}${t}`.replace(/[^A-Z0-9]/g,'');
       });
-      if (!appt) return reply(`Couldn't find a pending booking matching ref ${ref}. Reply CONFIRM [tech] or DECLINE without a ref to act on the oldest pending booking.`);
+      if (!appt) return reply(`Couldn't find a pending booking matching ref ${ref}. Reply YES [tech] or NO without a ref to act on the oldest pending booking.`);
     } else if (pending.length === 1) {
       appt = pending[0];
     } else {
@@ -119,7 +120,7 @@ module.exports = async function handler(req, res) {
         const mon = d.toLocaleString('en-US',{month:'short'}).toUpperCase();
         return `${a.name}: ${mon}${d.getDate()}-${(a.time||'').replace(/:00/,'').replace(/\s/g,'')}`;
       }).join('\n');
-      return reply(`Multiple pending bookings. Reply with the ref to pick one:\n${list}\n\nExample: CONFIRM AMY ${pending[0] ? (function(a){const d=new Date(a.date+'T00:00:00');return d.toLocaleString('en-US',{month:'short'}).toUpperCase()+d.getDate()+'-'+(a.time||'').replace(/:00/,'').replace(/\s/g,'');})(pending[0]) : 'JUN20-2PM'}`);
+      return reply(`Multiple pending bookings. Reply with the ref to pick one:\n${list}\n\nExample: YES AMY ${pending[0] ? (function(a){const d=new Date(a.date+'T00:00:00');return d.toLocaleString('en-US',{month:'short'}).toUpperCase()+d.getDate()+'-'+(a.time||'').replace(/:00/,'').replace(/\s/g,'');})(pending[0]) : 'JUN20-2PM'}`);
     }
 
     const apptDesc = `${appt.name} — ${appt.service} on ${appt.date} at ${appt.time}`;
@@ -149,7 +150,7 @@ module.exports = async function handler(req, res) {
       if (appt.tech_name && appt.tech_name !== 'Any available' && appt.tech_name !== 'To be assigned') {
         assignTech = appt.tech_name;
       } else {
-        return reply(`Who should be assigned to ${appt.name}'s ${appt.service}?\nReply CONFIRM [name]: AMY, IVY, MIMI, or RACHEL`);
+        return reply(`Who should be assigned to ${appt.name}'s ${appt.service}?\nReply YES [name]: AMY, IVY, MIMI, or RACHEL`);
       }
     }
 
