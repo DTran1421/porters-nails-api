@@ -24,6 +24,28 @@ module.exports = async function handler(req, res) {
   if (req.method === 'GET') {
     try {
       if (req.query.settings === '1') {
+        const visitorId = req.query.vid ? String(req.query.vid).slice(0, 100) : null;
+        const pageReferrer = req.query.ref ? String(req.query.ref).slice(0, 500) : null;
+        const country = req.headers['x-vercel-ip-country'] || null;
+        const svcHeaders = { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}`, 'Content-Type': 'application/json' };
+
+        // Log page view — only when the client sent a visitor id (i.e. a real site
+        // page load, not some other internal caller). Awaited so it completes before
+        // the function exits; errors here never break the actual settings response.
+        if (visitorId) {
+          try {
+            await fetch(`${SUPABASE_URL}/rest/v1/page_views`, {
+              method: 'POST', headers: svcHeaders,
+              body: JSON.stringify({
+                visitor_id: visitorId,
+                page_referrer_header: pageReferrer,
+                country: country,
+                user_agent: req.headers['user-agent'] || null
+              })
+            });
+          } catch (logErr) { console.error('page_view log failed', logErr); }
+        }
+
         const r = await fetch(`${SUPABASE_URL}/rest/v1/site_settings`, {
           headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` }
         });
