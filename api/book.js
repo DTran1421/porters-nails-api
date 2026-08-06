@@ -32,6 +32,20 @@ module.exports = async function handler(req, res) {
   // ── GET ───────────────────────────────────────────────────────────────
   if (req.method === 'GET') {
     try {
+      if (req.query.trafficsources === '1') {
+        const token = req.headers['x-session-token'];
+        if (!(await verifySessionToken(token))) return res.status(401).json({ error: 'Unauthorized' });
+
+        const startDate = req.query.start || new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10);
+        const endDate = req.query.end || new Date().toISOString().slice(0, 10);
+        const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/get_traffic_sources`, {
+          method: 'POST',
+          headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ start_date: startDate, end_date: endDate })
+        });
+        if (!r.ok) throw new Error(`Supabase ${r.status}`);
+        return res.status(200).json(await r.json());
+      }
       if (req.query.analytics === '1') {
         // Auth-protected — this exposes traffic/referrer data, not public info
         const token = req.headers['x-session-token'];
@@ -52,6 +66,11 @@ module.exports = async function handler(req, res) {
         const pageReferrer = req.query.ref ? String(req.query.ref).slice(0, 500) : null;
         const country = req.headers['x-vercel-ip-country'] || null;
         const userAgent = req.headers['user-agent'] || '';
+        const gclid = req.query.gclid ? String(req.query.gclid).slice(0, 200) : null;
+        const fbclid = req.query.fbclid ? String(req.query.fbclid).slice(0, 200) : null;
+        const utmSource = req.query.utm_source ? String(req.query.utm_source).slice(0, 100) : null;
+        const utmMedium = req.query.utm_medium ? String(req.query.utm_medium).slice(0, 100) : null;
+        const utmCampaign = req.query.utm_campaign ? String(req.query.utm_campaign).slice(0, 200) : null;
         const BOT_PATTERN = /bot|crawl|spider|headless|puppeteer|playwright|phantom|slurp|curl|wget|python-requests|facebookexternalhit|slackbot|discordbot|telegrambot|whatsapp|preview|monitor|pingdom|uptimerobot/i;
         const isLikelyBot = BOT_PATTERN.test(userAgent);
         const svcHeaders = { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}`, 'Content-Type': 'application/json' };
@@ -67,7 +86,12 @@ module.exports = async function handler(req, res) {
                 visitor_id: visitorId,
                 page_referrer_header: pageReferrer,
                 country: country,
-                user_agent: userAgent || null
+                user_agent: userAgent || null,
+                gclid: gclid,
+                fbclid: fbclid,
+                utm_source: utmSource,
+                utm_medium: utmMedium,
+                utm_campaign: utmCampaign
               })
             });
           } catch (logErr) { console.error('page_view log failed', logErr); }
