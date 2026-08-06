@@ -23,6 +23,28 @@ module.exports = async function handler(req, res) {
   // ── GET ───────────────────────────────────────────────────────────────
   if (req.method === 'GET') {
     try {
+      if (req.query.analytics === '1') {
+        // Auth-protected — this exposes traffic/referrer data, not public info
+        const token = req.headers['x-session-token'];
+        if (!token) return res.status(401).json({ error: 'Missing session token' });
+        const svHeaders = { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` };
+        const sessRes = await fetch(`${SUPABASE_URL}/rest/v1/owner_sessions?token=eq.${encodeURIComponent(token)}`, { headers: svHeaders });
+        const sessions = sessRes.ok ? await sessRes.json() : [];
+        const session = sessions[0];
+        if (!session || Date.now() > parseInt(session.expiry)) {
+          return res.status(401).json({ error: 'Invalid or expired session' });
+        }
+
+        const startDate = req.query.start || new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10);
+        const endDate = req.query.end || new Date().toISOString().slice(0, 10);
+        const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/get_daily_analytics`, {
+          method: 'POST',
+          headers: { ...svHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ start_date: startDate, end_date: endDate })
+        });
+        if (!r.ok) throw new Error(`Supabase ${r.status}`);
+        return res.status(200).json(await r.json());
+      }
       if (req.query.settings === '1') {
         const visitorId = req.query.vid ? String(req.query.vid).slice(0, 100) : null;
         const pageReferrer = req.query.ref ? String(req.query.ref).slice(0, 500) : null;
