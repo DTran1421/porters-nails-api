@@ -12,7 +12,7 @@ module.exports = async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', 'https://portersnailsandspa.com');
   }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-session-token');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   const RESEND_KEY       = process.env.RESEND_KEY;
@@ -51,12 +51,15 @@ module.exports = async function handler(req, res) {
         const visitorId = req.query.vid ? String(req.query.vid).slice(0, 100) : null;
         const pageReferrer = req.query.ref ? String(req.query.ref).slice(0, 500) : null;
         const country = req.headers['x-vercel-ip-country'] || null;
+        const userAgent = req.headers['user-agent'] || '';
+        const BOT_PATTERN = /bot|crawl|spider|headless|puppeteer|playwright|phantom|slurp|curl|wget|python-requests|facebookexternalhit|slackbot|discordbot|telegrambot|whatsapp|preview|monitor|pingdom|uptimerobot/i;
+        const isLikelyBot = BOT_PATTERN.test(userAgent);
         const svcHeaders = { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}`, 'Content-Type': 'application/json' };
 
-        // Log page view — only when the client sent a visitor id (i.e. a real site
-        // page load, not some other internal caller). Awaited so it completes before
+        // Log page view — only for a real visitor id from an apparent real browser
+        // (not a headless/bot/crawler user agent). Awaited so it completes before
         // the function exits; errors here never break the actual settings response.
-        if (visitorId) {
+        if (visitorId && !isLikelyBot) {
           try {
             await fetch(`${SUPABASE_URL}/rest/v1/page_views`, {
               method: 'POST', headers: svcHeaders,
@@ -64,7 +67,7 @@ module.exports = async function handler(req, res) {
                 visitor_id: visitorId,
                 page_referrer_header: pageReferrer,
                 country: country,
-                user_agent: req.headers['user-agent'] || null
+                user_agent: userAgent || null
               })
             });
           } catch (logErr) { console.error('page_view log failed', logErr); }
