@@ -71,7 +71,7 @@ module.exports = async function handler(req, res) {
         const utmSource = req.query.utm_source ? String(req.query.utm_source).slice(0, 100) : null;
         const utmMedium = req.query.utm_medium ? String(req.query.utm_medium).slice(0, 100) : null;
         const utmCampaign = req.query.utm_campaign ? String(req.query.utm_campaign).slice(0, 200) : null;
-        const BOT_PATTERN = /bot|crawl|spider|headless|puppeteer|playwright|phantom|slurp|curl|wget|python-requests|facebookexternalhit|slackbot|discordbot|telegrambot|whatsapp|preview|monitor|pingdom|uptimerobot/i;
+        const BOT_PATTERN = /bot|crawl|spider|headless|puppeteer|playwright|phantom|slurp|curl|wget|python-requests|facebookexternalhit|slackbot|discordbot|telegrambot|whatsapp|preview|monitor|pingdom|uptimerobot|compatible;\s*google\)|businesslinkverification|google-adsbot|adsbot-google|google-structureddata|google-inspectiontool/i;
         const isLikelyBot = BOT_PATTERN.test(userAgent);
         const svcHeaders = { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}`, 'Content-Type': 'application/json' };
 
