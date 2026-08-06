@@ -16,20 +16,6 @@ module.exports = async function handler(req, res) {
 
   try {
     if (req.method === 'GET') {
-      // Log page view — awaited so it completes before the function exits (serverless
-      // functions can be frozen right after the response is sent), but errors here
-      // are swallowed so a logging hiccup never breaks the real settings response.
-      try {
-        await fetch(`${SUPABASE_URL}/rest/v1/page_views`, {
-          method: 'POST', headers,
-          body: JSON.stringify({
-            path: req.headers['referer'] || null,
-            referrer: req.headers['x-vercel-ip-country'] || null,
-            user_agent: req.headers['user-agent'] || null
-          })
-        });
-      } catch (logErr) { console.error('page_view log failed', logErr); }
-
       const r = await fetch(`${SUPABASE_URL}/rest/v1/site_settings`, { headers });
       if (!r.ok) throw new Error(`Supabase ${r.status}`);
       return res.status(200).json(await r.json());
