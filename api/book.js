@@ -28,6 +28,12 @@ module.exports = async function handler(req, res) {
     const session = sessions[0];
     return !!(session && Date.now() <= parseInt(session.expiry));
   }
+  // Formats a Date as YYYY-MM-DD in Central Time (handles DST automatically) —
+  // avoids toISOString(), which is always UTC and caused analytics date
+  // boundaries to be several hours off from the actual Central "today".
+  function centralDateStr(date) {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+  }
 
   // ── GET ───────────────────────────────────────────────────────────────
   if (req.method === 'GET') {
@@ -36,8 +42,8 @@ module.exports = async function handler(req, res) {
         const token = req.headers['x-session-token'];
         if (!(await verifySessionToken(token))) return res.status(401).json({ error: 'Unauthorized' });
 
-        const startDate = req.query.start || new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10);
-        const endDate = req.query.end || new Date().toISOString().slice(0, 10);
+        const startDate = req.query.start || centralDateStr(new Date(Date.now() - 29 * 86400000));
+        const endDate = req.query.end || centralDateStr(new Date());
         const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/get_traffic_sources`, {
           method: 'POST',
           headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}`, 'Content-Type': 'application/json' },
@@ -51,8 +57,8 @@ module.exports = async function handler(req, res) {
         const token = req.headers['x-session-token'];
         if (!(await verifySessionToken(token))) return res.status(401).json({ error: 'Unauthorized' });
 
-        const startDate = req.query.start || new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10);
-        const endDate = req.query.end || new Date().toISOString().slice(0, 10);
+        const startDate = req.query.start || centralDateStr(new Date(Date.now() - 29 * 86400000));
+        const endDate = req.query.end || centralDateStr(new Date());
         const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/get_daily_analytics`, {
           method: 'POST',
           headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}`, 'Content-Type': 'application/json' },
