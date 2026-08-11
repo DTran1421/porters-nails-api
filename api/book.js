@@ -59,10 +59,11 @@ module.exports = async function handler(req, res) {
 
         const startDate = req.query.start || centralDateStr(new Date(Date.now() - 29 * 86400000));
         const endDate = req.query.end || centralDateStr(new Date());
+        const sourceFilter = req.query.source ? String(req.query.source).slice(0, 100) : null;
         const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/get_daily_analytics`, {
           method: 'POST',
           headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ start_date: startDate, end_date: endDate })
+          body: JSON.stringify({ start_date: startDate, end_date: endDate, filter_source: sourceFilter })
         });
         if (!r.ok) throw new Error(`Supabase ${r.status}`);
         return res.status(200).json(await r.json());
