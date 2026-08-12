@@ -3,6 +3,7 @@
 // POST → receives a new booking, stores it, emails owner + customer
 
 const { logMessage } = require('./log');
+const { createAppointmentEvent, deleteAppointmentEvent } = require('../lib/calendar');
 
 module.exports = async function handler(req, res) {
   var origin = req.headers.origin || '';
@@ -67,6 +68,42 @@ module.exports = async function handler(req, res) {
         });
         if (!r.ok) throw new Error(`Supabase ${r.status}`);
         return res.status(200).json(await r.json());
+      }
+      if (req.query.resyncCalendar === '1') {
+        // One-time fix for the calendar timezone bug — deletes and recreates
+        // each upcoming appointment's calendar event with the corrected time.
+        // Only touches upcoming appointments; past ones don't matter anymore.
+        const token = req.headers['x-session-token'];
+        if (!(await verifySessionToken(token))) return res.status(401).json({ error: 'Unauthorized' });
+
+        const svHeaders = { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}`, 'Content-Type': 'application/json' };
+        const today = centralDateStr(new Date());
+        const r = await fetch(`${SUPABASE_URL}/rest/v1/appointments?calendar_event_id=not.is.null&date=gte.${today}`, { headers: svHeaders });
+        if (!r.ok) throw new Error(`Supabase ${r.status}`);
+        const appts = await r.json();
+
+        let fixed = 0, failed = 0;
+        const errors = [];
+        for (const appt of appts) {
+          try {
+            await deleteAppointmentEvent(appt.calendar_event_id);
+            const newEventId = await createAppointmentEvent(appt);
+            if (newEventId) {
+              await fetch(`${SUPABASE_URL}/rest/v1/appointments?id=eq.${appt.id}`, {
+                method: 'PATCH', headers: svHeaders,
+                body: JSON.stringify({ calendar_event_id: newEventId })
+              });
+              fixed++;
+            } else {
+              failed++;
+              errors.push(`${appt.name} (${appt.date} ${appt.time}): event creation returned null — check GOOGLE_CLIENT_EMAIL/GOOGLE_PRIVATE_KEY/GOOGLE_CALENDAR_ID env vars`);
+            }
+          } catch (e) {
+            failed++;
+            errors.push(`${appt.name} (${appt.date} ${appt.time}): ${e.message}`);
+          }
+        }
+        return res.status(200).json({ total: appts.length, fixed, failed, errors });
       }
       if (req.query.settings === '1') {
         const visitorId = req.query.vid ? String(req.query.vid).slice(0, 100) : null;
