@@ -92,8 +92,10 @@ module.exports = async function handler(req, res) {
       else if (/^[A-Za-z]+$/.test(p)) { techName = p.charAt(0).toUpperCase() + p.slice(1).toLowerCase(); }
     }
 
-    // Find pending appointments
-    const pendRes = await fetch(`${SUPABASE_URL}/rest/v1/appointments?status=eq.pending&order=created_at.asc&select=*`, { headers });
+    // Find pending appointments (exclude ones whose date has already passed —
+    // those are stale and just clutter the picker / block auto-matching)
+    const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
+    const pendRes = await fetch(`${SUPABASE_URL}/rest/v1/appointments?status=eq.pending&date=gte.${todayStr}&order=created_at.asc&select=*`, { headers });
     const pending = await pendRes.json();
     if (!pending.length) {
       return reply("There are no pending appointments right now.");
