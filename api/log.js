@@ -17,26 +17,31 @@ const SUPABASE_SVC_KEY = process.env.SUPABASE_SERVICE_KEY;
  */
 async function logMessage(opts) {
   if (!SUPABASE_URL || !SUPABASE_SVC_KEY) return;
+  const insert = (bodyText) => fetch(`${SUPABASE_URL}/rest/v1/message_log`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'apikey': SUPABASE_SVC_KEY,
+      'Authorization': `Bearer ${SUPABASE_SVC_KEY}`,
+      'Prefer': 'return=minimal'
+    },
+    body: JSON.stringify({
+      type:             opts.type,
+      recipient:        opts.recipient,
+      recipient_name:   opts.recipientName || null,
+      subject:          opts.subject       || null,
+      body_preview:     bodyText,
+      trigger:          opts.trigger,
+      appointment_id:   opts.appointmentId || null,
+      status:           opts.status        || 'sent'
+    })
+  });
   try {
-    await fetch(`${SUPABASE_URL}/rest/v1/message_log`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': SUPABASE_SVC_KEY,
-        'Authorization': `Bearer ${SUPABASE_SVC_KEY}`,
-        'Prefer': 'return=minimal'
-      },
-      body: JSON.stringify({
-        type:             opts.type,
-        recipient:        opts.recipient,
-        recipient_name:   opts.recipientName || null,
-        subject:          opts.subject       || null,
-        body_preview:     (opts.body || '').slice(0, 160),
-        trigger:          opts.trigger,
-        appointment_id:   opts.appointmentId || null,
-        status:           opts.status        || 'sent'
-      })
-    });
+    // Store the full message (capped at 2000 chars) so the dashboard can show all of it.
+    // If the column turns out to be length-limited, fall back to the old 160-char preview
+    // so the entry is still saved (the text approval queue depends on these rows).
+    const r = await insert((opts.body || '').slice(0, 2000));
+    if (!r.ok) await insert((opts.body || '').slice(0, 160));
   } catch (_) {
     // logging should never break the main flow
   }
