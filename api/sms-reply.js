@@ -1,6 +1,7 @@
 // Porter's Nails — handles inbound SMS from owners to confirm/decline/assign appointments
 const { logMessage } = require('./log');
 const { createAppointmentEvent, deleteAppointmentEvent } = require('../lib/calendar');
+const { getQueue, getTechs, wasPrompted, promptText, listText, notifyFront, logReply, refFor, isSpecificTech } = require('../lib/queue');
 
 module.exports = async function handler(req, res) {
   // Twilio sends application/x-www-form-urlencoded POST
@@ -65,64 +66,78 @@ module.exports = async function handler(req, res) {
     }
     const responderName = responder ? responder.name : 'A manager';
 
-    // Helper to broadcast to all OTHER managers
-    const broadcastToOthers = async (text, apptId) => {
-      for (const m of managers) {
-        const mp = (m.phone||'').replace(/\D/g,'').slice(-10);
-        if (mp && mp !== fromPhone) await sendSms(m.phone, text, m.name, 'handled_broadcast', apptId);
-      }
-    };
-
     const upper = message.toUpperCase();
     const firstWord = (upper.split(/\s+/)[0] || '');
     const isConfirm = ['CONFIRM', 'CONFIRMED', 'YES', 'Y'].includes(firstWord);
     const isDecline = ['DECLINE', 'DECLINED', 'NO', 'N'].includes(firstWord);
+    const isSkip = firstWord === 'SKIP';
+    const isList = ['LIST', 'QUEUE', 'PENDING'].includes(firstWord);
 
-    if (!isConfirm && !isDecline) {
-      return reply("Reply YES [tech name] or NO to manage a booking (CONFIRM/DECLINE also work). Example: YES AMY");
+    const { queue, skipped } = await getQueue();
+    const techs = await getTechs();
+
+    // ── LIST ──
+    if (isList) return reply(listText(queue, skipped));
+
+    if (!isConfirm && !isDecline && !isSkip) {
+      return reply("Reply YES (+ tech # or name), NO, SKIP, or LIST. Example: YES 2");
     }
 
-    // Parse optional ref (e.g. JUN20-2PM) and tech name
+    // Parse optional ref (e.g. NOV20-2PM), tech number, or tech name
     const parts = message.split(/\s+/);
     let techName = null;
+    let techNum = null;
     let ref = null;
     for (let i = 1; i < parts.length; i++) {
-      const p = parts[i];
+      const p = parts[i].replace(/^#/, '');
       if (/\d/.test(p) && /[A-Za-z]/.test(p) && p.includes('-')) { ref = p.toUpperCase(); }
+      else if (/^\d{1,2}$/.test(p)) { techNum = parseInt(p, 10); }
       else if (/^[A-Za-z]+$/.test(p)) { techName = p.charAt(0).toUpperCase() + p.slice(1).toLowerCase(); }
     }
 
-    // Find pending appointments (exclude ones whose date has already passed —
-    // those are stale and just clutter the picker / block auto-matching)
-    const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
-    const pendRes = await fetch(`${SUPABASE_URL}/rest/v1/appointments?status=eq.pending&date=gte.${todayStr}&order=created_at.asc&select=*`, { headers });
-    const pending = await pendRes.json();
-    if (!pending.length) {
-      return reply("There are no pending appointments right now.");
-    }
-
-    // Match the appointment
+    // Pick the booking: an explicit ref still works (any pending booking),
+    // otherwise it's always the one at the front of the queue.
     let appt = null;
     if (ref) {
-      // ref looks like JUN20-2PM — match against date+time
-      appt = pending.find(a => {
-        const d = new Date(a.date + 'T00:00:00');
-        const mon = d.toLocaleString('en-US',{month:'short'}).toUpperCase();
-        const day = d.getDate();
-        const t = (a.time||'').replace(/:00/,'').replace(/\s/g,'').toUpperCase();
-        return ref === `${mon}${day}-${t}` || ref.replace(/[^A-Z0-9]/g,'') === `${mon}${day}${t}`.replace(/[^A-Z0-9]/g,'');
+      const all = [...queue, ...skipped];
+      appt = all.find(a => {
+        const r = refFor(a);
+        return ref === r || ref.replace(/[^A-Z0-9]/g,'') === r.replace(/[^A-Z0-9]/g,'');
       });
-      if (!appt) return reply(`Couldn't find a pending booking matching ref ${ref}. Reply YES [tech] or NO without a ref to act on the oldest pending booking.`);
-    } else if (pending.length === 1) {
-      appt = pending[0];
+      if (!appt) return reply(`Couldn't find a pending booking matching ${ref}. Reply LIST to see what's waiting.`);
     } else {
-      // Multiple pending, no ref
-      const list = pending.slice(0,5).map(a => {
-        const d = new Date(a.date+'T00:00:00');
-        const mon = d.toLocaleString('en-US',{month:'short'}).toUpperCase();
-        return `${a.name}: ${mon}${d.getDate()}-${(a.time||'').replace(/:00/,'').replace(/\s/g,'')}`;
-      }).join('\n');
-      return reply(`Multiple pending bookings. Reply with the ref to pick one:\n${list}\n\nExample: YES AMY ${pending[0] ? (function(a){const d=new Date(a.date+'T00:00:00');return d.toLocaleString('en-US',{month:'short'}).toUpperCase()+d.getDate()+'-'+(a.time||'').replace(/:00/,'').replace(/\s/g,'');})(pending[0]) : 'JUN20-2PM'}`);
+      appt = queue[0];
+      if (!appt) {
+        return reply(skipped.length
+          ? `Nothing waiting by text. ${skipped.length} skipped booking${skipped.length > 1 ? 's are' : ' is'} on the dashboard.`
+          : "There are no pending appointments right now.");
+      }
+      // Never act on a booking this person hasn't been shown — show it first
+      if (!(await wasPrompted(appt.id, fromPhone))) {
+        const text = "Heads up - this is the booking waiting now. Reply again to act on it.\n\n" + promptText(appt, queue.length, techs);
+        await logReply(fromPhone, responderName, text, 'approval_prompt', appt.id);
+        return reply(text);
+      }
+    }
+
+    // After handling a booking: catch up the other managers, then build this
+    // person's reply with the next booking in line attached.
+    const finish = async (doneLine, notice, handledId) => {
+      const { front: next, queue: q } = await notifyFront({ excludePhone: fromPhone, notice, noticeApptId: handledId });
+      if (next) {
+        const text = doneLine + '\n\n' + promptText(next, q.length, techs, { nextUp: true });
+        await logReply(fromPhone, responderName, text, 'approval_prompt', next.id);
+        return reply(text);
+      }
+      const { skipped: sk } = await getQueue();
+      return reply(doneLine + (sk.length ? `\nNothing else waiting by text (${sk.length} skipped on the dashboard).` : '\nAll caught up!'));
+    };
+
+    // ── SKIP ── leave it pending for the dashboard and move on
+    if (isSkip) {
+      await logReply(fromPhone, responderName, `Skipped ${appt.name} - left for dashboard`, 'queue_skip', appt.id);
+      return finish(`Skipped ${appt.name}. It's still pending on the dashboard.`,
+        `${responderName} skipped ${appt.name}'s request (left for the dashboard).`, appt.id);
     }
 
     const apptDesc = `${appt.name} — ${appt.service} on ${appt.date} at ${appt.time}`;
@@ -141,18 +156,25 @@ module.exports = async function handler(req, res) {
 
       if (appt.phone && appt.sms_opt_in) await sendSms(appt.phone, `Hi ${appt.name}, unfortunately we can't accommodate your requested time for ${appt.service}. Please call (281) 747-7421 and we'll find a time that works. - Porter's Nails`, appt.name, 'declined', appt.id);
       if (appt.email) await sendEmail(appt.email, "About your appointment request", `<div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:24px"><h2 style="color:#B84A6E">About your appointment request</h2><p>Hi ${appt.name}, unfortunately we can't accommodate your requested time. Please call or text us at <a href="tel:2817477421">(281) 747-7421</a> and we'll find a time that works.</p></div>`);
-      await broadcastToOthers(`✗ Handled by ${responderName}: ${appt.name}'s request (${appt.date} at ${appt.time}) was declined.`, appt.id);
-      return reply(`✓ Declined. ${appt.name} has been notified.`);
+      return finish(`Declined ${appt.name}. They've been notified.`,
+        `Handled by ${responderName}: ${appt.name}'s request (${appt.date} at ${appt.time}) was declined.`, appt.id);
     }
 
     // ── CONFIRM ──
     // Determine tech: explicit name > existing specific tech > prompt
+    // Determine tech: number from the menu > name > the tech they requested > ask
     let assignTech = techName;
+    if (techNum !== null) {
+      if (!techs[techNum - 1]) {
+        return reply(`There's no tech #${techNum}. Techs: ${techs.map((t, i) => `${i + 1} ${t.name}`).join(', ')}`);
+      }
+      assignTech = techs[techNum - 1].name;
+    }
     if (!assignTech) {
-      if (appt.tech_name && appt.tech_name !== 'Any available' && appt.tech_name !== 'To be assigned') {
+      if (isSpecificTech(appt.tech_name)) {
         assignTech = appt.tech_name;
       } else {
-        return reply(`Who should be assigned to ${appt.name}'s ${appt.service}?\nReply YES [name]: AMY, IVY, MIMI, or RACHEL`);
+        return reply(`Which tech for ${appt.name}'s ${appt.service}? Reply YES + number:\n${techs.map((t, i) => `${i + 1} ${t.name}`).join(', ')}`);
       }
     }
 
@@ -203,8 +225,8 @@ module.exports = async function handler(req, res) {
     // Email owner receipt
     if (OWNER_EMAIL) await sendEmail(OWNER_EMAIL, `Confirmed — ${appt.name}`, `<div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:24px"><h2 style="color:#3B6D11">✓ Appointment Confirmed</h2><p><strong>${responderName}</strong> confirmed <strong>${appt.name}'s</strong> appointment via text.</p><table style="width:100%;border-collapse:collapse;font-size:15px;margin:16px 0"><tr style="border-bottom:1px solid #f0d0d8"><td style="padding:8px 0;font-weight:600">Service</td><td>${appt.service}</td></tr><tr style="border-bottom:1px solid #f0d0d8"><td style="padding:8px 0;font-weight:600">When</td><td>${appt.date} at ${appt.time}</td></tr><tr><td style="padding:8px 0;font-weight:600">Assigned to</td><td>${assignTech}</td></tr></table><p style="color:#555;font-size:13px">${appt.name} and ${assignTech} have been notified.</p></div>`);
 
-    await broadcastToOthers(`✓ Handled by ${responderName}: ${appt.name} confirmed with ${assignTech}, ${appt.date} at ${appt.time}.`, appt.id);
-    return reply(`✓ Confirmed! ${appt.name} assigned to ${assignTech}. Customer${techRows[0].phone ? ' and '+assignTech : ''} notified.`);
+    return finish(`Confirmed ${appt.name} with ${assignTech}. Customer${techRows[0].phone ? ' and ' + assignTech : ''} notified.`,
+      `Handled by ${responderName}: ${appt.name} confirmed with ${assignTech}, ${appt.date} at ${appt.time}.`, appt.id);
 
   } catch (err) {
     console.error('SMS reply error:', err.message);

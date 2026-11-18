@@ -1,6 +1,7 @@
 // Porter's Nails — booking lookup by token (for customer self-service)
 const { logMessage } = require('./log');
 const { deleteAppointmentEvent } = require('../lib/calendar');
+const { announceNewRequest, notifyFront } = require('../lib/queue');
 module.exports = async function handler(req, res) {
   var origin = req.headers.origin || '';
   if (origin.includes('portersnailsandspa.com')) {
@@ -80,6 +81,9 @@ module.exports = async function handler(req, res) {
           })
         });
       }
+      // If this was the booking managers were being asked about, move the text queue along
+      if (appt.status === 'pending') { try { await notifyFront({ notice: `${appt.name} cancelled their pending request.`, noticeApptId: appt.id }); } catch (e) { console.error('queue notify failed', e.message); } }
+
       // Notify assigned tech
       if (appt.tech_name && appt.tech_name !== 'Any available') {
         const techRes = await fetch(`${SUPABASE_URL}/rest/v1/nail_techs?name=eq.${encodeURIComponent(appt.tech_name)}&select=phone`, { headers });
@@ -177,6 +181,9 @@ module.exports = async function handler(req, res) {
         });
         await logMessage({ type:'email', recipient:orig.email, recipientName:orig.name, subject:custSubject, body:custBody, trigger:'reschedule_request', appointmentId:orig.id });
       }
+
+      // Text managers through the approval queue
+      if (apptId) { try { await announceNewRequest(apptId); } catch (e) { console.error('queue announce failed', e.message); } }
 
       return res.status(200).json({ success: true, token: newToken });
     } catch (err) {

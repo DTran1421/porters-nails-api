@@ -1,6 +1,7 @@
 // Porter's Nails — approve, decline, cancel, or reschedule an appointment
 const { logMessage } = require('./log');
 const { createAppointmentEvent, deleteAppointmentEvent } = require('../lib/calendar');
+const { notifyFront } = require('../lib/queue');
 
 module.exports = async function handler(req, res) {
   var origin = req.headers.origin || '';
@@ -181,6 +182,11 @@ module.exports = async function handler(req, res) {
         </div>`;
       }
       await sendEmail(email, subject, html, name, trigger);
+    }
+
+    // Dashboard handled a booking — if the text queue moved, text managers the next one
+    if (['confirmed', 'declined', 'cancelled'].includes(status)) {
+      try { await notifyFront(); } catch (e) { console.error('queue notify failed', e.message); }
     }
 
     return res.status(200).json({ success: true });

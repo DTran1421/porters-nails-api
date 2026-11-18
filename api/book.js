@@ -4,6 +4,7 @@
 
 const { logMessage } = require('./log');
 const { createAppointmentEvent, deleteAppointmentEvent } = require('../lib/calendar');
+const { announceNewRequest } = require('../lib/queue');
 
 module.exports = async function handler(req, res) {
   var origin = req.headers.origin || '';
@@ -326,20 +327,10 @@ module.exports = async function handler(req, res) {
       await sendSms(phone, custMsg, name, walkin ? 'confirmed' : 'new_booking');
     }
 
-    // Notify all booking managers (techs with is_manager=true and a phone).
-    // Skipped for walk-ins: staff entered it themselves and it's already confirmed,
-    // so the "Reply CONFIRM or DECLINE" prompt would be wrong/noisy.
-    const mgrRes = await fetch(`${SUPABASE_URL}/rest/v1/nail_techs?is_manager=eq.true&phone=not.is.null&select=name,phone`, { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } });
-    const managers = mgrRes.ok ? await mgrRes.json() : [];
-    if (!walkin && managers.length) {
-      const d = new Date(date + 'T00:00:00');
-      const mon = d.toLocaleString('en-US',{month:'short'}).toUpperCase();
-      const ref = `${mon}${d.getDate()}-${(time||'').replace(/:00/,'').replace(/\s/g,'').toUpperCase()}`;
-      const techLine = (techName && techName !== 'Any available' && techName !== 'To be assigned') ? `Requested: ${techName}` : 'Requested: Any available';
-      const ownerMsg = `New booking: ${name}\n${service} — ${date} at ${time}\n${techLine}\nReply CONFIRM [name] or DECLINE\nRef: ${ref}`;
-      for (const m of managers) {
-        await sendSms(m.phone, ownerMsg, m.name, 'new_booking');
-      }
+    // Notify booking managers through the approval queue (lib/queue.js).
+    // Skipped for walk-ins: staff entered it themselves and it's already confirmed.
+    if (!walkin && apptId) {
+      try { await announceNewRequest(apptId); } catch (e) { console.error('queue announce failed', e.message); }
     }
 
     if (techName && techName !== 'Any available' && techName !== 'To be assigned') {
