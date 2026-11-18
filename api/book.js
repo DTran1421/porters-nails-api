@@ -5,6 +5,8 @@
 const { logMessage } = require('./log');
 const { createAppointmentEvent, deleteAppointmentEvent } = require('../lib/calendar');
 const { announceNewRequest } = require('../lib/queue');
+const { sendSms, sendEmail } = require('../lib/notify');
+const { fmtWhen } = require('../lib/format');
 
 module.exports = async function handler(req, res) {
   var origin = req.headers.origin || '';
@@ -245,16 +247,11 @@ module.exports = async function handler(req, res) {
     const [newAppt] = await dbRes.json();
     const apptId = newAppt?.id;
 
+    const when = fmtWhen(date, time);
+    const opts = (trigger, recipientName) => ({ trigger, recipientName, apptId });
+
     // ── Email owner ───────────────────────────────────────────────────
-    const ownerEmailBody = `New booking request from ${name}: ${service} on ${date} at ${time}`;
-    await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        from: "Porter's Nails <bookings@portersnailsandspa.com>",
-        to: [OWNER_EMAIL],
-        subject: `New booking request — ${name}`,
-        html: `<div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:24px">
+    await sendEmail(OWNER_EMAIL, `New booking request — ${name}`, `<div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:24px">
           <h2 style="color:#B84A6E;margin-bottom:16px">💅 New Appointment Request</h2>
           <table style="width:100%;border-collapse:collapse;font-size:15px">
             <tr style="border-bottom:1px solid #f0d0d8"><td style="padding:10px 0;font-weight:600;width:110px">Name</td><td>${name}</td></tr>
@@ -262,69 +259,38 @@ module.exports = async function handler(req, res) {
             <tr style="border-bottom:1px solid #f0d0d8"><td style="padding:10px 0;font-weight:600">Email</td><td>${email || 'Not provided'}</td></tr>
             <tr style="border-bottom:1px solid #f0d0d8"><td style="padding:10px 0;font-weight:600">Service</td><td>${service}${priceLabel ? ' — ' + priceLabel : ''} <span style="color:#888">(${category})</span></td></tr>
             <tr style="border-bottom:1px solid #f0d0d8"><td style="padding:10px 0;font-weight:600">Tech</td><td>${techName}</td></tr>
-            <tr style="border-bottom:1px solid #f0d0d8"><td style="padding:10px 0;font-weight:600">Date</td><td>${date}</td></tr>
-            <tr style="border-bottom:1px solid #f0d0d8"><td style="padding:10px 0;font-weight:600">Time</td><td>${time}</td></tr>
+            <tr style="border-bottom:1px solid #f0d0d8"><td style="padding:10px 0;font-weight:600">When</td><td>${when}</td></tr>
+            <tr style="border-bottom:1px solid #f0d0d8"><td style="padding:10px 0;font-weight:600">Texts OK</td><td>${smsOptIn ? 'Yes' : 'No'}</td></tr>
             <tr><td style="padding:10px 0;font-weight:600">Notes</td><td>${notes || 'None'}</td></tr>
           </table>
           <a href="https://portersnailsandspa.com/manage/"
             style="display:inline-block;margin-top:24px;background:#B84A6E;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700">
             Open Dashboard →</a>
-        </div>`
-      })
-    });
-    await logMessage({ type:'email', recipient:OWNER_EMAIL, recipientName:'Owner', subject:`New booking request — ${name}`, body:ownerEmailBody, trigger:'new_booking', appointmentId:apptId });
+        </div>`, opts(walkin ? 'walk_in' : 'new_booking', 'Owner'));
 
     // ── Email customer ────────────────────────────────────────────────
     if (email) {
-      const custSubject = "We got your booking request! 💅";
-      const custBody = `Hi ${name}! We received your appointment request for ${service} on ${date} at ${time}.`;
-      await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          from: "Porter's Nails <bookings@portersnailsandspa.com>",
-          to: [email],
-          subject: custSubject,
-          html: `<div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:24px">
+      await sendEmail(email, walkin ? "Your appointment is confirmed! 💅" : "We got your booking request! 💅", `<div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:24px">
             <h2 style="color:#B84A6E">Thanks, ${name}!</h2>
-            <p style="color:#555;font-size:15px">We received your appointment request at <strong>Porter's Nails and Spa</strong>. We'll confirm it shortly!</p>
+            <p style="color:#555;font-size:15px">${walkin ? "Your appointment at <strong>Porter's Nails and Spa</strong> is confirmed." : "We received your appointment request at <strong>Porter's Nails and Spa</strong>. We'll confirm it shortly!"}</p>
             <div style="background:#fdf8f5;border:1px solid #f0d0d8;border-radius:12px;padding:18px;margin:20px 0;font-size:15px">
               <div style="margin-bottom:8px"><strong>Service:</strong> ${service}</div>
-              <div style="margin-bottom:8px"><strong>Date:</strong> ${date}</div>
-              <div><strong>Time:</strong> ${time}</div>
+              <div><strong>When:</strong> ${when}</div>
             </div>
             <p style="color:#555;font-size:14px">Questions? Call or text us at <a href="tel:2817477421" style="color:#B84A6E">(281) 747-7421</a>.</p>
             <a href="https://portersnailsandspa.com?booking=${token}" style="display:inline-block;margin-top:16px;background:#B84A6E;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700">View or reschedule my booking →</a>
-            <p style="color:#aaa;font-size:12px">23830 FM1314 Suite C, Porter, TX 77365<br>Mon–Sat 9 AM–6:30 PM</p>
-          </div>`
-        })
-      });
-      await logMessage({ type:'email', recipient:email, recipientName:name, subject:custSubject, body:custBody, trigger:'new_booking', appointmentId:apptId });
+            <p style="color:#aaa;font-size:12px">23830 FM1314 Suite C, Porter, TX 77365</p>
+          </div>`, opts(walkin ? 'confirmed' : 'new_booking', name));
     }
 
     // ── SMS ───────────────────────────────────────────────────────────
-    const TWILIO_SID   = process.env.TWILIO_SID;
-    const TWILIO_TOKEN = process.env.TWILIO_TOKEN;
-    const TWILIO_FROM  = process.env.TWILIO_FROM;
-
-    const sendSms = async (to, body, recipientName, trigger) => {
-      if (!TWILIO_SID || !TWILIO_TOKEN || !TWILIO_FROM || !to) return;
-      const toNum = '+1' + to.replace(/\D/g,'').slice(-10);
-      const tw = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Messages.json`, {
-        method: 'POST',
-        headers: { 'Authorization': 'Basic ' + Buffer.from(`${TWILIO_SID}:${TWILIO_TOKEN}`).toString('base64'), 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ From: TWILIO_FROM, To: toNum, Body: body }).toString()
-      });
-      await logMessage({ type:'sms', recipient:toNum, recipientName, body, trigger, appointmentId:apptId , status: tw.ok ? 'sent' : 'failed' });
-    };
-
     if (phone && smsOptIn) {
       // Walk-ins are created as confirmed, so the customer gets a confirmation —
       // not the "we'll confirm shortly" message meant for pending web requests.
       const custMsg = walkin
-        ? `Hi ${name}! Your ${service} at Porter's Nails on ${date} at ${time} is confirmed. See you then! Msg&data rates may apply, msg freq varies. Reply HELP for help, STOP to opt out. - Porter's Nails & Spa`
-        : `Hi ${name}! We received your appointment request for ${service} on ${date} at ${time}. We'll confirm shortly! Questions? Call (281) 747-7421. - Porter's Nails & Spa`;
-      await sendSms(phone, custMsg, name, walkin ? 'confirmed' : 'new_booking');
+        ? `Hi ${name}! Your ${service} at Porter's Nails on ${when} is confirmed. See you then! Msg&data rates may apply, msg freq varies. Reply HELP for help, STOP to opt out. - Porter's Nails & Spa`
+        : `Hi ${name}! We received your appointment request for ${service} on ${when}. We'll confirm shortly! Questions? Call (281) 747-7421. - Porter's Nails & Spa`;
+      await sendSms(phone, custMsg, opts(walkin ? 'confirmed' : 'new_booking', name));
     }
 
     // Notify booking managers through the approval queue (lib/queue.js).
@@ -333,15 +299,20 @@ module.exports = async function handler(req, res) {
       try { await announceNewRequest(apptId); } catch (e) { console.error('queue announce failed', e.message); }
     }
 
+    // Heads-up to the requested tech. Skipped when that tech is also a booking
+    // manager — they already got the approval text, so this would be a duplicate.
     if (techName && techName !== 'Any available' && techName !== 'To be assigned') {
       const techRes = await fetch(
-        `${SUPABASE_URL}/rest/v1/nail_techs?name=eq.${encodeURIComponent(techName)}&select=phone`,
+        `${SUPABASE_URL}/rest/v1/nail_techs?name=eq.${encodeURIComponent(techName)}&select=phone,is_manager`,
         { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } }
       );
       if (techRes.ok) {
-        const techRows = await techRes.json();
-        if (techRows[0]?.phone) {
-          await sendSms(techRows[0].phone, `New booking: ${name} requested ${service} on ${date} at ${time}. Check the dashboard. - Porter's Nails`, techName, 'new_booking');
+        const t = (await techRes.json())[0];
+        if (t?.phone && !(t.is_manager && !walkin)) {
+          const msg = walkin
+            ? `Walk-in booked: ${name} - ${service} on ${when}. - Porter's Nails`
+            : `New booking: ${name} requested ${service} on ${when}. Check the dashboard. - Porter's Nails`;
+          await sendSms(t.phone, msg, opts(walkin ? 'confirmed' : 'new_booking', techName));
         }
       }
     }

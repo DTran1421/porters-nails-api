@@ -1,5 +1,7 @@
 // Porter's Nails — handles inbound SMS from owners to confirm/decline/assign appointments
 const { logMessage } = require('./log');
+const notify = require('../lib/notify');
+const { fmtWhen } = require('../lib/format');
 const { createAppointmentEvent, deleteAppointmentEvent } = require('../lib/calendar');
 const { getQueue, getTechs, wasPrompted, promptText, listText, notifyFront, refFor, isSpecificTech } = require('../lib/queue');
 
@@ -12,11 +14,7 @@ module.exports = async function handler(req, res) {
 
   const SUPABASE_URL     = process.env.SUPABASE_URL;
   const SUPABASE_SVC_KEY = process.env.SUPABASE_SERVICE_KEY;
-  const RESEND_KEY       = process.env.RESEND_KEY;
   const OWNER_EMAIL      = process.env.OWNER_EMAIL;
-  const TWILIO_SID       = process.env.TWILIO_SID;
-  const TWILIO_TOKEN     = process.env.TWILIO_TOKEN;
-  const TWILIO_FROM      = process.env.TWILIO_FROM;
   const headers = { 'Content-Type': 'application/json', 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` };
 
   // Parse Twilio's form-encoded body
@@ -49,25 +47,8 @@ module.exports = async function handler(req, res) {
     return res.status(200).send(`<Response><Message>${text.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</Message></Response>`);
   };
 
-  const sendSms = async (to, text, recipientName, trigger, apptId) => {
-    if (!TWILIO_SID || !TWILIO_TOKEN || !TWILIO_FROM || !to) return;
-    const toNum = '+1' + to.replace(/\D/g,'').slice(-10);
-    const tw = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Messages.json`, {
-      method: 'POST',
-      headers: { 'Authorization': 'Basic ' + Buffer.from(`${TWILIO_SID}:${TWILIO_TOKEN}`).toString('base64'), 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ From: TWILIO_FROM, To: toNum, Body: text }).toString()
-    });
-    try { await logMessage({ type:'sms', recipient:toNum, recipientName, body:text, trigger, appointmentId:apptId , status: tw.ok ? 'sent' : 'failed' }); } catch(e){}
-  };
-
-  const sendEmail = async (to, subject, html) => {
-    if (!RESEND_KEY || !to) return;
-    await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: "Porter's Nails <bookings@portersnailsandspa.com>", to: [to], subject, html })
-    });
-  };
+  const sendSms = (to, text, recipientName, trigger, apptId) => notify.sendSms(to, text, { recipientName, trigger, apptId });
+  const sendEmail = (to, subject, html, recipientName, trigger, apptId) => notify.sendEmail(to, subject, html, { recipientName, trigger, apptId });
 
   try {
     // Load all booking managers (techs with is_manager=true and a phone)
@@ -158,7 +139,7 @@ module.exports = async function handler(req, res) {
         `${responderName} skipped ${appt.name}'s request (left for the dashboard).`, appt.id);
     }
 
-    const apptDesc = `${appt.name} — ${appt.service} on ${appt.date} at ${appt.time}`;
+    const when = fmtWhen(appt.date, appt.time);
 
     // ── DECLINE ──
     if (isDecline) {
@@ -172,10 +153,11 @@ module.exports = async function handler(req, res) {
       // Delete calendar event if one exists
       if (appt.calendar_event_id) await deleteAppointmentEvent(appt.calendar_event_id);
 
-      if (appt.phone && appt.sms_opt_in) await sendSms(appt.phone, `Hi ${appt.name}, unfortunately we can't accommodate your requested time for ${appt.service}. Please call (281) 747-7421 and we'll find a time that works. - Porter's Nails`, appt.name, 'declined', appt.id);
-      if (appt.email) await sendEmail(appt.email, "About your appointment request", `<div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:24px"><h2 style="color:#B84A6E">About your appointment request</h2><p>Hi ${appt.name}, unfortunately we can't accommodate your requested time. Please call or text us at <a href="tel:2817477421">(281) 747-7421</a> and we'll find a time that works.</p></div>`);
-      return finish(`Declined ${appt.name}. They've been notified.`,
-        `Handled by ${responderName}: ${appt.name}'s request (${appt.date} at ${appt.time}) was declined.`, appt.id);
+      if (notify.canTextCustomer(appt)) await sendSms(appt.phone, `Hi ${appt.name}, unfortunately we can't accommodate your requested time (${when}) for ${appt.service}. Please call (281) 747-7421 and we'll find a time that works. - Porter's Nails`, appt.name, 'declined', appt.id);
+      if (appt.email) await sendEmail(appt.email, "About your appointment request", `<div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:24px"><h2 style="color:#B84A6E">About your appointment request</h2><p>Hi ${appt.name}, unfortunately we can't accommodate your requested time for ${appt.service} on ${when}. Please call or text us at <a href="tel:2817477421">(281) 747-7421</a> and we'll find a time that works.</p></div>`, appt.name, 'declined', appt.id);
+      const told = notify.canTextCustomer(appt) ? (appt.email ? 'by text and email' : 'by text') : (appt.email ? 'by email' : null);
+      return finish(`Declined ${appt.name}. ${told ? `They've been notified ${told}.` : 'They have no text opt-in or email on file - please call them.'}`,
+        `Handled by ${responderName}: ${appt.name}'s request (${when}) was declined.`, appt.id);
     }
 
     // ── CONFIRM ──
@@ -234,17 +216,24 @@ module.exports = async function handler(req, res) {
     }
 
     // Notify customer
-    if (appt.phone && appt.sms_opt_in) await sendSms(appt.phone, `Hi ${appt.name}! Your ${appt.service} at Porter's Nails on ${appt.date} at ${appt.time} is confirmed with ${assignTech}. See you then! - Porter's Nails & Spa`, appt.name, 'confirmed', appt.id);
-    if (appt.email) await sendEmail(appt.email, "Your appointment is confirmed! 💅", `<div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:24px"><h2 style="color:#B84A6E">You're all set, ${appt.name}! 🎉</h2><div style="background:#fdf8f5;border:1px solid #f0d0d8;border-radius:12px;padding:18px;margin:20px 0;font-size:15px"><div style="margin-bottom:8px"><strong>Service:</strong> ${appt.service}</div><div style="margin-bottom:8px"><strong>Date:</strong> ${appt.date}</div><div style="margin-bottom:8px"><strong>Time:</strong> ${appt.time}</div><div><strong>Your nail tech:</strong> ${assignTech}</div></div><p style="color:#555;font-size:14px">Questions? Call <a href="tel:2817477421">(281) 747-7421</a>.</p></div>`);
+    if (notify.canTextCustomer(appt)) await sendSms(appt.phone, `Hi ${appt.name}! Your ${appt.service} at Porter's Nails on ${when} is confirmed with ${assignTech}. See you then! - Porter's Nails & Spa`, appt.name, 'confirmed', appt.id);
+    if (appt.email) await sendEmail(appt.email, "Your appointment is confirmed! 💅", `<div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:24px"><h2 style="color:#B84A6E">You're all set, ${appt.name}! 🎉</h2><div style="background:#fdf8f5;border:1px solid #f0d0d8;border-radius:12px;padding:18px;margin:20px 0;font-size:15px"><div style="margin-bottom:8px"><strong>Service:</strong> ${appt.service}</div><div style="margin-bottom:8px"><strong>When:</strong> ${when}</div><div><strong>Your nail tech:</strong> ${assignTech}</div></div><p style="color:#555;font-size:14px">Questions? Call <a href="tel:2817477421">(281) 747-7421</a>.</p></div>`, appt.name, 'confirmed', appt.id);
 
-    // Notify assigned tech
-    if (techRows[0].phone) await sendSms(techRows[0].phone, `Hi ${assignTech}! New appointment: ${appt.name} — ${appt.service} on ${appt.date} at ${appt.time}. - Porter's Nails`, assignTech, 'confirmed', appt.id);
+    // Notify assigned tech (not if they're the one who just confirmed it)
+    const techIsResponder = techRows[0].phone && techRows[0].phone.replace(/\D/g,'').slice(-10) === fromPhone;
+    if (techRows[0].phone && !techIsResponder) await sendSms(techRows[0].phone, `Hi ${assignTech}! New appointment: ${appt.name} - ${appt.service} on ${when}. - Porter's Nails`, assignTech, 'confirmed', appt.id);
 
     // Email owner receipt
-    if (OWNER_EMAIL) await sendEmail(OWNER_EMAIL, `Confirmed — ${appt.name}`, `<div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:24px"><h2 style="color:#3B6D11">✓ Appointment Confirmed</h2><p><strong>${responderName}</strong> confirmed <strong>${appt.name}'s</strong> appointment via text.</p><table style="width:100%;border-collapse:collapse;font-size:15px;margin:16px 0"><tr style="border-bottom:1px solid #f0d0d8"><td style="padding:8px 0;font-weight:600">Service</td><td>${appt.service}</td></tr><tr style="border-bottom:1px solid #f0d0d8"><td style="padding:8px 0;font-weight:600">When</td><td>${appt.date} at ${appt.time}</td></tr><tr><td style="padding:8px 0;font-weight:600">Assigned to</td><td>${assignTech}</td></tr></table><p style="color:#555;font-size:13px">${appt.name} and ${assignTech} have been notified.</p></div>`);
+    if (OWNER_EMAIL) await sendEmail(OWNER_EMAIL, `Confirmed — ${appt.name}`, `<div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:24px"><h2 style="color:#3B6D11">✓ Appointment Confirmed</h2><p><strong>${responderName}</strong> confirmed <strong>${appt.name}'s</strong> appointment via text.</p><table style="width:100%;border-collapse:collapse;font-size:15px;margin:16px 0"><tr style="border-bottom:1px solid #f0d0d8"><td style="padding:8px 0;font-weight:600">Service</td><td>${appt.service}</td></tr><tr style="border-bottom:1px solid #f0d0d8"><td style="padding:8px 0;font-weight:600">When</td><td>${when}</td></tr><tr><td style="padding:8px 0;font-weight:600">Assigned to</td><td>${assignTech}</td></tr></table><p style="color:#555;font-size:13px">${appt.name} and ${assignTech} have been notified.</p></div>`, 'Owner', 'confirmed', appt.id);
 
-    return finish(`Confirmed ${appt.name} with ${assignTech}. Customer${techRows[0].phone ? ' and ' + assignTech : ''} notified.`,
-      `Handled by ${responderName}: ${appt.name} confirmed with ${assignTech}, ${appt.date} at ${appt.time}.`, appt.id);
+    const custReached = notify.canTextCustomer(appt) || !!appt.email;
+    const notified = [];
+    if (custReached) notified.push(appt.name);
+    if (techRows[0].phone && !techIsResponder) notified.push(assignTech);
+    const noteLine = (notified.length ? notified.join(' and ') + ' notified.' : '') +
+      (custReached ? '' : `${notified.length ? ' ' : ''}${appt.name} has no text opt-in or email on file - please call them.`);
+    return finish(`Confirmed ${appt.name} with ${assignTech}. ${noteLine}`,
+      `Handled by ${responderName}: ${appt.name} confirmed with ${assignTech}, ${when}.`, appt.id);
 
   } catch (err) {
     console.error('SMS reply error:', err.message);

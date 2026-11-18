@@ -1,193 +1,146 @@
-// Porter's Nails — approve, decline, cancel, or reschedule an appointment
-const { logMessage } = require('./log');
+// Porter's Nails — approve, decline, cancel, or reschedule an appointment (owner dashboard)
+//
+// Requires a logged-in dashboard session (x-session-token). Customer details
+// (name, phone, email, opt-in) always come from the database, never from the
+// request, so this endpoint can't be used to send texts to arbitrary numbers.
 const { createAppointmentEvent, deleteAppointmentEvent } = require('../lib/calendar');
-const { notifyFront } = require('../lib/queue');
+const { notifyFront, isSpecificTech } = require('../lib/queue');
+const { sendSms, sendEmail, canTextCustomer } = require('../lib/notify');
+const { fmtWhen } = require('../lib/format');
+
+const PHONE = '(281) 747-7421';
+const emailWrap = (inner) => `<div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:24px">${inner}</div>`;
+const detailsBox = (rows) => `<div style="background:#fdf8f5;border:1px solid #f0d0d8;border-radius:12px;padding:18px;margin:20px 0;font-size:15px">${rows.map((r) => `<div style="margin-bottom:8px">${r}</div>`).join('')}</div>`;
+const callLine = (lead) => `<p style="color:#555;font-size:14px">${lead} <a href="tel:2817477421" style="color:#B84A6E">${PHONE}</a>.</p>`;
 
 module.exports = async function handler(req, res) {
-  var origin = req.headers.origin || '';
-  if (origin.includes('portersnailsandspa.com')) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-  } else {
-    res.setHeader('Access-Control-Allow-Origin', 'https://portersnailsandspa.com');
-  }
+  const origin = req.headers.origin || '';
+  res.setHeader('Access-Control-Allow-Origin', origin.includes('portersnailsandspa.com') ? origin : 'https://portersnailsandspa.com');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-session-token');
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { id, status, name, email, phone, service, date, time, tech_name, new_date, new_time, old_date, old_time } = req.body;
+  const SUPABASE_URL = process.env.SUPABASE_URL;
+  const KEY = process.env.SUPABASE_SERVICE_KEY;
+  const headers = { 'Content-Type': 'application/json', 'apikey': KEY, 'Authorization': `Bearer ${KEY}` };
+  const db = (path, opts = {}) => fetch(`${SUPABASE_URL}/rest/v1/${path}`, { headers, ...opts });
+  const patchAppt = (apptId, fields) => db(`appointments?id=eq.${apptId}`, { method: 'PATCH', headers: { ...headers, 'Prefer': 'return=minimal' }, body: JSON.stringify(fields) });
+
+  // ── Dashboard login check ──
+  const token = req.headers['x-session-token'];
+  if (!token) return res.status(401).json({ error: 'Unauthorized' });
+  const sessRes = await db(`owner_sessions?token=eq.${encodeURIComponent(token)}`);
+  const session = sessRes.ok ? (await sessRes.json())[0] : null;
+  if (!session || Date.now() > parseInt(session.expiry)) return res.status(401).json({ error: 'Unauthorized' });
+
+  const { id, status, tech_name, new_date, new_time } = req.body || {};
   if (!id || !status) return res.status(400).json({ error: 'Missing id or status' });
-
-  const RESEND_KEY       = process.env.RESEND_KEY;
-  const SUPABASE_URL     = process.env.SUPABASE_URL;
-  const SUPABASE_SVC_KEY = process.env.SUPABASE_SERVICE_KEY;
-  const TWILIO_SID       = process.env.TWILIO_SID;
-  const TWILIO_TOKEN     = process.env.TWILIO_TOKEN;
-  const TWILIO_FROM      = process.env.TWILIO_FROM;
-
-  const sendSms = async (to, body, recipientName, trigger) => {
-    if (!TWILIO_SID || !TWILIO_TOKEN || !TWILIO_FROM || !to) return;
-    const toNum = '+1' + to.replace(/\D/g,'').slice(-10);
-    const tw = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Messages.json`, {
-      method: 'POST',
-      headers: { 'Authorization': 'Basic ' + Buffer.from(`${TWILIO_SID}:${TWILIO_TOKEN}`).toString('base64'), 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ From: TWILIO_FROM, To: toNum, Body: body }).toString()
-    });
-    await logMessage({ type:'sms', recipient:toNum, recipientName, body, trigger, appointmentId:id , status: tw.ok ? 'sent' : 'failed' });
-  };
-
-  const sendEmail = async (to, subject, html, recipientName, trigger) => {
-    await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: "Porter's Nails <bookings@portersnailsandspa.com>", to: [to], subject, html })
-    });
-    await logMessage({ type:'email', recipient:to, recipientName, subject, body:subject, trigger, appointmentId:id });
-  };
+  if (!['confirmed', 'declined', 'cancelled', 'rescheduled'].includes(status)) return res.status(400).json({ error: 'Unknown status' });
 
   try {
+    const apptRes = await db(`appointments?id=eq.${encodeURIComponent(id)}&select=*`);
+    const appt = apptRes.ok ? (await apptRes.json())[0] : null;
+    if (!appt) return res.status(404).json({ error: 'Appointment not found' });
+
+    const techPhone = async (name) => {
+      if (!isSpecificTech(name)) return null;
+      const r = await db(`nail_techs?name=eq.${encodeURIComponent(name)}&select=phone`);
+      return r.ok ? ((await r.json())[0]?.phone || null) : null;
+    };
+    const opts = (trigger, recipientName) => ({ trigger, recipientName, apptId: appt.id });
+
     // ── Staff reschedule ───────────────────────────────────────────────
     if (status === 'rescheduled') {
-      const updateRes = await fetch(`${SUPABASE_URL}/rest/v1/appointments?id=eq.${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}`, 'Prefer': 'return=minimal' },
-        body: JSON.stringify({ date: new_date, time: new_time })
-      });
-      if (!updateRes.ok) throw new Error(`Supabase error: ${updateRes.status}`);
+      if (!new_date || !new_time) return res.status(400).json({ error: 'Missing new date/time' });
+      const was = fmtWhen(appt.date, appt.time);
+      const now = fmtWhen(new_date, new_time);
+      const upd = await patchAppt(appt.id, { date: new_date, time: new_time });
+      if (!upd.ok) throw new Error(`Supabase error: ${upd.status}`);
 
-      if (phone) await sendSms(phone, `Hi ${name}! Your ${service} at Porter's Nails has been rescheduled to ${new_date} at ${new_time}. Questions? Call (281) 747-7421.`, name, 'rescheduled');
-
-      if (tech_name && tech_name !== 'Any available') {
-        const techRes = await fetch(`${SUPABASE_URL}/rest/v1/nail_techs?name=eq.${encodeURIComponent(tech_name)}&select=phone`, { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } });
-        if (techRes.ok) { const rows = await techRes.json(); if (rows[0]?.phone) await sendSms(rows[0].phone, `Appointment update: ${name}'s ${service} moved to ${new_date} at ${new_time}. - Porter's Nails`, tech_name, 'rescheduled'); }
+      // Move the calendar event too, so it doesn't stay at the old time
+      if (appt.calendar_event_id) {
+        await deleteAppointmentEvent(appt.calendar_event_id);
+        const evId = await createAppointmentEvent({ ...appt, date: new_date, time: new_time });
+        await patchAppt(appt.id, { calendar_event_id: evId || null });
       }
 
-      if (email) {
-        await sendEmail(email, "Your appointment has been rescheduled",
-          `<div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:24px">
-            <h2 style="color:#B84A6E">Appointment rescheduled 📅</h2>
-            <p>Hi ${name}! Your <strong>${service}</strong> appointment has been moved:</p>
-            <table style="width:100%;border-collapse:collapse;font-size:15px;margin:16px 0">
-              <tr style="border-bottom:1px solid #f0d0d8"><td style="padding:8px 0;font-weight:600;color:#888">Was</td><td style="text-decoration:line-through;color:#888">${old_date} at ${old_time}</td></tr>
-              <tr><td style="padding:8px 0;font-weight:600">Now</td><td><strong>${new_date} at ${new_time}</strong></td></tr>
-            </table>
-            <p style="color:#555;font-size:14px">Questions? Call <a href="tel:2817477421" style="color:#B84A6E">(281) 747-7421</a>.</p>
-          </div>`, name, 'rescheduled');
+      if (canTextCustomer(appt)) await sendSms(appt.phone, `Hi ${appt.name}! Your ${appt.service} at Porter's Nails has been rescheduled to ${now}. Questions? Call ${PHONE}. - Porter's Nails & Spa`, opts('rescheduled', appt.name));
+      const tp = await techPhone(appt.tech_name);
+      if (tp) await sendSms(tp, `Appointment update: ${appt.name}'s ${appt.service} moved to ${now}. - Porter's Nails`, opts('rescheduled', appt.tech_name));
+      if (appt.email) {
+        await sendEmail(appt.email, 'Your appointment has been rescheduled', emailWrap(
+          `<h2 style="color:#B84A6E">Appointment rescheduled</h2><p>Hi ${appt.name}! Your <strong>${appt.service}</strong> appointment has been moved.</p>` +
+          detailsBox([`<strong>Was:</strong> <span style="text-decoration:line-through;color:#888">${was}</span>`, `<strong>Now:</strong> ${now}`]) +
+          callLine('Questions? Call')), opts('rescheduled', appt.name));
       }
       return res.status(200).json({ success: true });
     }
 
-    // ── Update status ──────────────────────────────────────────────────
-    const updatePayload = { status };
-    if (tech_name) updatePayload.tech_name = tech_name;
+    // ── Confirm / decline / cancel ─────────────────────────────────────
+    const fields = { status };
+    if (status === 'confirmed' && tech_name) fields.tech_name = tech_name;
+    const upd = await patchAppt(appt.id, fields);
+    if (!upd.ok) throw new Error(`Supabase error: ${upd.status}`);
 
-    const dbRes = await fetch(`${SUPABASE_URL}/rest/v1/appointments?id=eq.${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}`, 'Prefer': 'return=minimal' },
-      body: JSON.stringify(updatePayload)
-    });
-    if (!dbRes.ok) throw new Error(`Supabase error: ${dbRes.status}`);
+    const when = fmtWhen(appt.date, appt.time);
 
-    // Cancel original if this is a reschedule approval
     if (status === 'confirmed') {
-      const apptRes = await fetch(`${SUPABASE_URL}/rest/v1/appointments?id=eq.${id}&select=reschedule_of,calendar_event_id,name,service,date,time,phone,email,notes,tech_name`, {
-        headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` }
-      });
-      if (apptRes.ok) {
-        const apptRows = await apptRes.json();
-        const thisAppt = apptRows[0];
-        if (thisAppt?.reschedule_of) {
-          // Delete original calendar event before cancelling it
-          const origRes = await fetch(`${SUPABASE_URL}/rest/v1/appointments?id=eq.${thisAppt.reschedule_of}&select=calendar_event_id`, { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } });
-          if (origRes.ok) { const origRows = await origRes.json(); if (origRows[0]?.calendar_event_id) await deleteAppointmentEvent(origRows[0].calendar_event_id); }
-          await fetch(`${SUPABASE_URL}/rest/v1/appointments?id=eq.${thisAppt.reschedule_of}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}`, 'Prefer': 'return=minimal' },
-            body: JSON.stringify({ status: 'cancelled' })
-          });
-        }
-        // Create Google Calendar event for this confirmed appointment
-        const resolvedTech = thisAppt.tech_name || tech_name || 'Any available';
-        const calEventId = await createAppointmentEvent({ ...thisAppt, tech_name: resolvedTech, date, time, service, name });
-        if (calEventId) {
-          await fetch(`${SUPABASE_URL}/rest/v1/appointments?id=eq.${id}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}`, 'Prefer': 'return=minimal' },
-            body: JSON.stringify({ calendar_event_id: calEventId })
-          });
-        }
+      const assigned = tech_name || appt.tech_name || 'Any available';
+
+      // Reschedule approval: cancel the original booking and its calendar event
+      if (appt.reschedule_of) {
+        const origRes = await db(`appointments?id=eq.${appt.reschedule_of}&select=calendar_event_id`);
+        const orig = origRes.ok ? (await origRes.json())[0] : null;
+        if (orig?.calendar_event_id) await deleteAppointmentEvent(orig.calendar_event_id);
+        await patchAppt(appt.reschedule_of, { status: 'cancelled' });
+      }
+      const evId = await createAppointmentEvent({ ...appt, tech_name: assigned });
+      if (evId) await patchAppt(appt.id, { calendar_event_id: evId });
+
+      const withTech = isSpecificTech(assigned) ? ` with ${assigned}` : '';
+      if (canTextCustomer(appt)) await sendSms(appt.phone, `Hi ${appt.name}! Your ${appt.service} at Porter's Nails on ${when} is confirmed${withTech}. See you then! - Porter's Nails & Spa`, opts('confirmed', appt.name));
+      const tp = await techPhone(assigned);
+      if (tp) await sendSms(tp, `Your appointment with ${appt.name} for ${appt.service} on ${when} is confirmed. - Porter's Nails`, opts('confirmed', assigned));
+      if (appt.email) {
+        await sendEmail(appt.email, 'Your appointment is confirmed! 💅', emailWrap(
+          `<h2 style="color:#B84A6E">You're all set, ${appt.name}! 🎉</h2><p style="color:#555;font-size:15px">Your appointment at <strong>Porter's Nails and Spa</strong> is confirmed.</p>` +
+          detailsBox([`<strong>Service:</strong> ${appt.service}`, `<strong>When:</strong> ${when}`].concat(isSpecificTech(assigned) ? [`<strong>Your nail tech:</strong> ${assigned}`] : [])) +
+          callLine('We look forward to seeing you! Questions? Call') +
+          `<p style="color:#aaa;font-size:12px">23830 FM1314 Suite C, Porter, TX 77365</p>`), opts('confirmed', appt.name));
       }
     }
 
-    // Delete calendar event on cancel or decline
-    if (status === 'cancelled' || status === 'declined') {
-      const apptRes = await fetch(`${SUPABASE_URL}/rest/v1/appointments?id=eq.${id}&select=calendar_event_id`, { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } });
-      if (apptRes.ok) { const apptRows = await apptRes.json(); if (apptRows[0]?.calendar_event_id) await deleteAppointmentEvent(apptRows[0].calendar_event_id); }
+    if (status === 'declined' || status === 'cancelled') {
+      if (appt.calendar_event_id) await deleteAppointmentEvent(appt.calendar_event_id);
     }
 
-    const isConfirmed = status === 'confirmed';
-    const isCancelled = status === 'cancelled';
-    const assignedTech = tech_name || null;
-    const trigger = isConfirmed ? 'confirmed' : isCancelled ? 'cancelled' : 'declined';
-
-    // SMS to customer on confirm
-    if (isConfirmed && phone) {
-      await sendSms(phone, `Hi ${name}! Your ${service} at Porter's Nails on ${date} at ${time} is confirmed. See you then! - Porter's Nails & Spa`, name, 'confirmed');
-    }
-
-    // SMS to tech on confirm
-    if (isConfirmed && assignedTech && assignedTech !== 'Any available') {
-      const techRes = await fetch(`${SUPABASE_URL}/rest/v1/nail_techs?name=eq.${encodeURIComponent(assignedTech)}&select=phone`, { headers: { 'apikey': SUPABASE_SVC_KEY, 'Authorization': `Bearer ${SUPABASE_SVC_KEY}` } });
-      if (techRes.ok) {
-        const techRows = await techRes.json();
-        if (techRows[0]?.phone) await sendSms(techRows[0].phone, `Your appointment with ${name} for ${service} on ${date} at ${time} is confirmed. - Porter's Nails`, assignedTech, 'confirmed');
+    if (status === 'declined') {
+      if (canTextCustomer(appt)) await sendSms(appt.phone, `Hi ${appt.name}, unfortunately we can't accommodate your requested time (${when}) for ${appt.service}. Please call ${PHONE} and we'll find a time that works. - Porter's Nails`, opts('declined', appt.name));
+      if (appt.email) {
+        await sendEmail(appt.email, 'About your appointment request', emailWrap(
+          `<h2 style="color:#B84A6E">About your appointment request</h2><p style="color:#555;font-size:15px">Hi ${appt.name}, unfortunately we can't accommodate your requested time for <strong>${appt.service}</strong> on ${when}.</p>` +
+          callLine("Please call or text us at") + `<p style="color:#555;font-size:14px">We'll find a time that works.</p>`), opts('declined', appt.name));
       }
     }
 
-    // Email customer
-    if (email) {
-      let subject, html;
-      if (isConfirmed) {
-        subject = "Your appointment is confirmed! 💅";
-        html = `<div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:24px">
-          <h2 style="color:#B84A6E">You're all set, ${name}! 🎉</h2>
-          <p style="color:#555;font-size:15px">Your appointment at <strong>Porter's Nails and Spa</strong> is confirmed.</p>
-          <div style="background:#fdf8f5;border:1px solid #f0d0d8;border-radius:12px;padding:18px;margin:20px 0;font-size:15px">
-            <div style="margin-bottom:8px"><strong>Service:</strong> ${service}</div>
-            <div style="margin-bottom:8px"><strong>Date:</strong> ${date}</div>
-            <div style="margin-bottom:8px"><strong>Time:</strong> ${time}</div>
-            ${assignedTech ? `<div><strong>Your nail tech:</strong> ${assignedTech}</div>` : ''}
-          </div>
-          <p style="color:#555;font-size:14px">We look forward to seeing you! Questions? Call <a href="tel:2817477421" style="color:#B84A6E">(281) 747-7421</a>.</p>
-          <p style="color:#aaa;font-size:12px">23830 FM1314 Suite C, Porter, TX 77365 &nbsp;·&nbsp; Mon–Sat 9 AM–6:30 PM</p>
-        </div>`;
-      } else if (isCancelled) {
-        subject = "Your appointment has been cancelled";
-        html = `<div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:24px">
-          <h2 style="color:#9a5a5a">Your appointment has been cancelled</h2>
-          <p style="color:#555;font-size:15px">Hi ${name}, unfortunately we've had to cancel your appointment at <strong>Porter's Nails and Spa</strong>.</p>
-          <div style="background:#fdf8f5;border:1px solid #f0d0d8;border-radius:12px;padding:18px;margin:20px 0;font-size:15px">
-            <div style="margin-bottom:8px"><strong>Service:</strong> ${service}</div>
-            <div style="margin-bottom:8px"><strong>Date:</strong> ${date}</div>
-            <div><strong>Time:</strong> ${time}</div>
-          </div>
-          <p style="color:#555;font-size:14px">We're sorry for the inconvenience. Please call us at <a href="tel:2817477421" style="color:#B84A6E">(281) 747-7421</a> to reschedule.</p>
-        </div>`;
-      } else {
-        subject = "About your appointment request";
-        html = `<div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:24px">
-          <h2 style="color:#B84A6E">About your appointment request</h2>
-          <p style="color:#555;font-size:15px">Hi ${name}, unfortunately we can't accommodate your requested time.</p>
-          <p style="color:#555;font-size:14px">Please call or text us at <a href="tel:2817477421" style="color:#B84A6E">(281) 747-7421</a> and we'll find a time that works.</p>
-        </div>`;
+    if (status === 'cancelled') {
+      if (canTextCustomer(appt)) await sendSms(appt.phone, `Hi ${appt.name}, your ${appt.service} at Porter's Nails on ${when} has been cancelled. We're sorry for the inconvenience - please call ${PHONE} to reschedule. - Porter's Nails`, opts('cancelled', appt.name));
+      // Let the tech know their slot opened up (only if it had been confirmed with them)
+      if (appt.status === 'confirmed') {
+        const tp = await techPhone(appt.tech_name);
+        if (tp) await sendSms(tp, `Cancellation: ${appt.name}'s ${appt.service} on ${when} was cancelled. The slot is now free. - Porter's Nails`, opts('cancelled', appt.tech_name));
       }
-      await sendEmail(email, subject, html, name, trigger);
+      if (appt.email) {
+        await sendEmail(appt.email, 'Your appointment has been cancelled', emailWrap(
+          `<h2 style="color:#9a5a5a">Your appointment has been cancelled</h2><p style="color:#555;font-size:15px">Hi ${appt.name}, unfortunately we've had to cancel your appointment at <strong>Porter's Nails and Spa</strong>.</p>` +
+          detailsBox([`<strong>Service:</strong> ${appt.service}`, `<strong>When:</strong> ${when}`]) +
+          callLine("We're sorry for the inconvenience. Please call us at") ), opts('cancelled', appt.name));
+      }
     }
 
-    // Dashboard handled a booking — if the text queue moved, text managers the next one
-    if (['confirmed', 'declined', 'cancelled'].includes(status)) {
-      try { await notifyFront(); } catch (e) { console.error('queue notify failed', e.message); }
-    }
+    // If the text-approval queue moved, text managers the next booking
+    try { await notifyFront(); } catch (e) { console.error('queue notify failed', e.message); }
 
     return res.status(200).json({ success: true });
   } catch (err) {
