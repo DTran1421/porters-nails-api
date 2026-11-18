@@ -24,12 +24,12 @@ module.exports = async function handler(req, res) {
   const sendSms = async (to, body, recipientName, appointmentId) => {
     if (!TWILIO_SID || !to) return;
     const toNum = '+1' + to.replace(/\D/g,'').slice(-10);
-    await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Messages.json`, {
+    const tw = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Messages.json`, {
       method: 'POST',
       headers: { 'Authorization': 'Basic ' + Buffer.from(`${TWILIO_SID}:${TWILIO_TOKEN}`).toString('base64'), 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ From: TWILIO_FROM, To: toNum, Body: body }).toString()
     });
-    await logMessage({ type:'sms', recipient:toNum, recipientName, body, trigger:'reminder', appointmentId });
+    await logMessage({ type:'sms', recipient:toNum, recipientName, body, trigger:'reminder', appointmentId , status: tw.ok ? 'sent' : 'failed' });
   };
 
   try {

@@ -1,7 +1,7 @@
 // Porter's Nails — handles inbound SMS from owners to confirm/decline/assign appointments
 const { logMessage } = require('./log');
 const { createAppointmentEvent, deleteAppointmentEvent } = require('../lib/calendar');
-const { getQueue, getTechs, wasPrompted, promptText, listText, notifyFront, logReply, refFor, isSpecificTech } = require('../lib/queue');
+const { getQueue, getTechs, wasPrompted, promptText, listText, notifyFront, refFor, isSpecificTech } = require('../lib/queue');
 
 module.exports = async function handler(req, res) {
   // Twilio sends application/x-www-form-urlencoded POST
@@ -28,8 +28,23 @@ module.exports = async function handler(req, res) {
   const fromPhone = (body.From || '').replace(/\D/g,'').slice(-10);
   const message = (body.Body || '').trim();
 
-  // Reply helper — returns TwiML so Twilio texts the owner back
-  const reply = (text) => {
+  // Everything that comes in and goes out here is written to the message log,
+  // so the dashboard shows the full back-and-forth.
+  let senderName = 'Unknown';          // set once we know who texted
+  let inbound = { trigger: 'reply_received', apptId: null };  // SKIP overrides this (the queue reads it)
+  const logRow = (recipientName, text, trigger, apptId) =>
+    logMessage({ type: 'sms', recipient: '+1' + fromPhone, recipientName, body: text, trigger, appointmentId: apptId }).catch(() => {});
+
+  // Reply helper — logs the incoming text and our answer, then returns TwiML so Twilio texts it back
+  let inboundLogged = false;
+  const logInbound = async () => {
+    if (inboundLogged) return;
+    inboundLogged = true;
+    await logRow(`From ${senderName}`, message, inbound.trigger, inbound.apptId);
+  };
+  const reply = async (text, outTrigger = 'auto_reply', outApptId = null) => {
+    await logInbound();
+    await logRow(senderName, text, outTrigger, outApptId);
     res.setHeader('Content-Type', 'text/xml');
     return res.status(200).send(`<Response><Message>${text.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</Message></Response>`);
   };
@@ -37,12 +52,12 @@ module.exports = async function handler(req, res) {
   const sendSms = async (to, text, recipientName, trigger, apptId) => {
     if (!TWILIO_SID || !TWILIO_TOKEN || !TWILIO_FROM || !to) return;
     const toNum = '+1' + to.replace(/\D/g,'').slice(-10);
-    await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Messages.json`, {
+    const tw = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Messages.json`, {
       method: 'POST',
       headers: { 'Authorization': 'Basic ' + Buffer.from(`${TWILIO_SID}:${TWILIO_TOKEN}`).toString('base64'), 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ From: TWILIO_FROM, To: toNum, Body: text }).toString()
     });
-    try { await logMessage({ type:'sms', recipient:toNum, recipientName, body:text, trigger, appointmentId:apptId }); } catch(e){}
+    try { await logMessage({ type:'sms', recipient:toNum, recipientName, body:text, trigger, appointmentId:apptId , status: tw.ok ? 'sent' : 'failed' }); } catch(e){}
   };
 
   const sendEmail = async (to, subject, html) => {
@@ -62,9 +77,12 @@ module.exports = async function handler(req, res) {
 
     if (managers.length && !responder) {
       // Unknown sender (likely a customer) — polite redirect to call or visit the site.
+      senderName = 'customer';
+      inbound.trigger = 'customer_text';
       return reply("Thanks for reaching out to Porter's Nails & Spa! This number isn't monitored for texts. Please call us at (281) 747-7421 or book online at portersnailsandspa.com. 💅");
     }
     const responderName = responder ? responder.name : 'A manager';
+    senderName = responderName;
 
     const upper = message.toUpperCase();
     const firstWord = (upper.split(/\s+/)[0] || '');
@@ -77,7 +95,7 @@ module.exports = async function handler(req, res) {
     const techs = await getTechs();
 
     // ── LIST ──
-    if (isList) return reply(listText(queue, skipped));
+    if (isList) return reply(listText(queue, skipped), 'list_reply');
 
     if (!isConfirm && !isDecline && !isSkip) {
       return reply("Reply YES (+ tech # or name), NO, SKIP, or LIST. Example: YES 2");
@@ -115,8 +133,7 @@ module.exports = async function handler(req, res) {
       // Never act on a booking this person hasn't been shown — show it first
       if (!(await wasPrompted(appt.id, fromPhone))) {
         const text = "Heads up - this is the booking waiting now. Reply again to act on it.\n\n" + promptText(appt, queue.length, techs);
-        await logReply(fromPhone, responderName, text, 'approval_prompt', appt.id);
-        return reply(text);
+        return reply(text, 'approval_prompt', appt.id);
       }
     }
 
@@ -126,8 +143,7 @@ module.exports = async function handler(req, res) {
       const { front: next, queue: q } = await notifyFront({ excludePhone: fromPhone, notice, noticeApptId: handledId });
       if (next) {
         const text = doneLine + '\n\n' + promptText(next, q.length, techs, { nextUp: true });
-        await logReply(fromPhone, responderName, text, 'approval_prompt', next.id);
-        return reply(text);
+        return reply(text, 'approval_prompt', next.id);
       }
       const { skipped: sk } = await getQueue();
       return reply(doneLine + (sk.length ? `\nNothing else waiting by text (${sk.length} skipped on the dashboard).` : '\nAll caught up!'));
@@ -135,7 +151,9 @@ module.exports = async function handler(req, res) {
 
     // ── SKIP ── leave it pending for the dashboard and move on
     if (isSkip) {
-      await logReply(fromPhone, responderName, `Skipped ${appt.name} - left for dashboard`, 'queue_skip', appt.id);
+      // The logged incoming "SKIP" (tagged with this booking) is what takes it out of the text queue
+      inbound = { trigger: 'queue_skip', apptId: appt.id };
+      await logInbound();  // must be saved before we look up the next booking
       return finish(`Skipped ${appt.name}. It's still pending on the dashboard.`,
         `${responderName} skipped ${appt.name}'s request (left for the dashboard).`, appt.id);
     }

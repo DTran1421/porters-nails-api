@@ -25,12 +25,12 @@ module.exports = async function handler(req, res) {
   const sendSms = async (to, body, recipientName, trigger, apptId) => {
     if (!TWILIO_SID || !TWILIO_TOKEN || !TWILIO_FROM || !to) return;
     const toNum = '+1' + to.replace(/\D/g,'').slice(-10);
-    await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Messages.json`, {
+    const tw = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Messages.json`, {
       method: 'POST',
       headers: { 'Authorization': 'Basic ' + Buffer.from(`${TWILIO_SID}:${TWILIO_TOKEN}`).toString('base64'), 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ From: TWILIO_FROM, To: toNum, Body: body }).toString()
     });
-    try { await logMessage({ type:'sms', recipient:toNum, recipientName, body, trigger, appointmentId:apptId }); } catch(e){}
+    try { await logMessage({ type:'sms', recipient:toNum, recipientName, body, trigger, appointmentId:apptId , status: tw.ok ? 'sent' : 'failed' }); } catch(e){}
   };
 
   // ── Customer self-cancellation ───────────────────────────────────────
